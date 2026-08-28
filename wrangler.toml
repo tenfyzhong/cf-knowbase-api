@@ -1,0 +1,14 @@
+name = "cf-kb-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[ai]
+binding = "AI"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "kb-index"
+
+[vars]
+AI_MODEL = "@cf/baai/bge-base-en-v1.5"
