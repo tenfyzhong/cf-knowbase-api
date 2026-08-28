@@ -49,6 +49,85 @@ describe("Search API Worker", () => {
     expect(json).toEqual({ status: "ok" });
   });
 
+  it("should serve OpenAI plugin manifest at GET /.well-known/ai-plugin.json", async () => {
+    const res = await app.request("/.well-known/ai-plugin.json", {}, mockEnv);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      schema_version: string;
+      name_for_model: string;
+      auth: { type: string };
+      api: { url: string };
+    };
+    expect(json.schema_version).toBe("v1");
+    expect(json.name_for_model).toBe("cloudflare_kb");
+    expect(json.auth.type).toBe("oauth");
+    expect(json.api.url).toBe("/openapi.json");
+  });
+
+  it("should serve OpenAPI 3.1 schema at GET /openapi.json", async () => {
+    const res = await app.request("/openapi.json", {}, mockEnv);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      openapi: string;
+      paths: Record<string, unknown>;
+    };
+    expect(json.openapi).toMatch(/^3\./);
+    expect(json.paths["/search"]).toBeDefined();
+  });
+
+  it("should handle OAuth authorization code flow", async () => {
+    // 1. GET /oauth/authorize -> HTML page or redirect if token provided
+    const authRes = await app.request(
+      "/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.com%2Faip%2Fcallback&state=state123&token=valid_secret_token_123",
+      {},
+      mockEnv
+    );
+    expect(authRes.status).toBe(302);
+    const location = authRes.headers.get("Location") || "";
+    expect(location).toContain("https://chatgpt.com/aip/callback");
+    expect(location).toContain("code=");
+    expect(location).toContain("state=state123");
+
+    const parsedCode = new URL(location).searchParams.get("code");
+    expect(parsedCode).toBeTruthy();
+
+    // 2. POST /oauth/token -> exchange code for token
+    const tokenRes = await app.request(
+      "/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          code: parsedCode,
+          redirect_uri: "https://chatgpt.com/aip/callback"
+        })
+      },
+      mockEnv
+    );
+
+    expect(tokenRes.status).toBe(200);
+    const tokenJson = (await tokenRes.json()) as {
+      access_token: string;
+      token_type: string;
+    };
+    expect(tokenJson.access_token).toBe("valid_secret_token_123");
+    expect(tokenJson.token_type).toBe("Bearer");
+  });
+
+  it("should verify token via GET /oauth/verify", async () => {
+    const res = await app.request(
+      "/oauth/verify",
+      {
+        headers: { Authorization: "Bearer valid_secret_token_123" }
+      },
+      mockEnv
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toEqual({ valid: true, scope: "read" });
+  });
+
   it("should reject unauthorized requests to POST /search", async () => {
     const resNoAuth = await app.request(
       "/search",
