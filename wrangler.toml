@@ -2,6 +2,7 @@ name = "cf-knowbase-api"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
+account_id = "d2400c41980c1ea80728ad214078178f"
 
 [ai]
 binding = "AI"
@@ -12,7 +13,7 @@ index_name = "kb-index"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "kb-kv-namespace"
+id = "8a7c460e8fbe468d9a7e268df7afc1ab"
 
 [vars]
 AI_MODEL = "@cf/baai/bge-base-en-v1.5"
