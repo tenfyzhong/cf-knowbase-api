@@ -229,7 +229,7 @@ app.get("/.well-known/ai-plugin.json", (c) => {
   return c.json({
     schema_version: "v1",
     name_for_human: "Cloudflare Knowledge Base",
-    name_for_model: "cloudflare_kb",
+    name_for_model: "cf_knowbase",
     description_for_human: "Semantic search over your personal notes, documents, and web content.",
     description_for_model:
       "Plugin for semantically searching and retrieving personal notes, obsidian documents, code repositories, and articles stored in Cloudflare Vectorize.",
@@ -246,7 +246,7 @@ app.get("/.well-known/ai-plugin.json", (c) => {
     },
     logo_url: "https://raw.githubusercontent.com/tenfyzhong/agent-plugins-hub/main/picture/logo.png",
     contact_email: "tenfy@tenfy.cn",
-    legal_info_url: "https://github.com/tenfyzhong/cf-kb-api"
+    legal_info_url: "https://github.com/tenfyzhong/cf-knowbase-api"
   });
 });
 

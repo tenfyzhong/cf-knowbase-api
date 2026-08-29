@@ -201,7 +201,7 @@ describe("Search & Indexing API Worker", () => {
       api: { url: string };
     };
     expect(json.schema_version).toBe("v1");
-    expect(json.name_for_model).toBe("cloudflare_kb");
+    expect(json.name_for_model).toBe("cf_knowbase");
     expect(json.auth.type).toBe("oauth");
     expect(json.api.url).toBe("/openapi.json");
   });
