@@ -163,7 +163,7 @@ app.post("/vectors/upsert", async (c) => {
     return c.json({ success: true, count: 0 });
   }
 
-  const model = c.env.AI_MODEL || "@cf/baai/bge-base-en-v1.5";
+  const model = c.env.AI_MODEL || "@cf/baai/bge-m3";
   const batchSize = 25;
   let totalUpserted = 0;
 
@@ -493,7 +493,7 @@ app.post("/search", async (c) => {
   }
 
   const { query, topK, source } = parseResult.data;
-  const model = c.env.AI_MODEL || "@cf/baai/bge-base-en-v1.5";
+  const model = c.env.AI_MODEL || "@cf/baai/bge-m3";
 
   try {
     const embeddingResponse = await c.env.AI.run(model, { text: [query] });

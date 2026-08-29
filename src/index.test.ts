@@ -6,7 +6,7 @@ describe("Search & Indexing API Worker", () => {
 
   const mockEnv = {
     API_TOKEN: "valid_secret_token_123",
-    AI_MODEL: "@cf/baai/bge-base-en-v1.5",
+    AI_MODEL: "@cf/baai/bge-m3",
     AI: {
       run: vi.fn().mockResolvedValue({
         data: [[0.11, 0.22, 0.33]]
@@ -144,7 +144,7 @@ describe("Search & Indexing API Worker", () => {
     expect(json.count).toBe(1);
 
     expect(mockEnv.AI.run).toHaveBeenCalledWith(
-      "@cf/baai/bge-base-en-v1.5",
+      "@cf/baai/bge-m3",
       { text: ["System architecture overview"] }
     );
 
@@ -315,7 +315,7 @@ describe("Search & Indexing API Worker", () => {
     const json = (await res.json()) as SearchResponse;
 
     expect(mockEnv.AI.run).toHaveBeenCalledWith(
-      "@cf/baai/bge-base-en-v1.5",
+      "@cf/baai/bge-m3",
       { text: ["how does architecture work?"] }
     );
 

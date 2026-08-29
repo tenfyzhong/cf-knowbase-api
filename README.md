@@ -4,7 +4,7 @@ Cloudflare Worker providing a secure, unified semantic search and vector managem
 
 ## Features
 
-- **Workers AI Embedding**: Direct on-edge text & query vectorization using `@cf/baai/bge-base-en-v1.5` (768 dimensions) or custom models.
+- **Workers AI Embedding**: Direct on-edge text & query vectorization using `@cf/baai/bge-m3` (1024 dimensions, multilingual & Chinese optimized) or custom models.
 - **Vector Management**: Full CRUD support for Vectorize (`/vectors/upsert`, `/vectors/delete`, `/search`) directly via Worker APIs.
 - **KV Sync State Persistence**: Tracks incremental sync states and Git commit hashes (`/sync-state/:source`).
 - **OAuth 2.0 & OpenAPI 3.1 Support**: Built-in OAuth authorization flow and `.well-known/ai-plugin.json` for ChatGPT (Web & Mobile) and Codex integration.
@@ -66,7 +66,7 @@ Healthcheck endpoint.
 ### 1. Create Vectorize Index & KV Namespace
 
 ```bash
-npx wrangler vectorize create knowbase-index --dimensions=768 --metric=cosine
+npx wrangler vectorize create knowbase-index --dimensions=1024 --metric=cosine
 npx wrangler kv namespace create knowbase-kv-namespace
 ```
 

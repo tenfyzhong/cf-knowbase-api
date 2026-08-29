@@ -20,4 +20,4 @@ binding = "KV"
 id = "8892dd218f4b43259ca31b786dc3b422"
 
 [vars]
-AI_MODEL = "@cf/baai/bge-base-en-v1.5"
+AI_MODEL = "@cf/baai/bge-m3"
