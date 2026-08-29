@@ -66,8 +66,8 @@ Healthcheck endpoint.
 ### 1. Create Vectorize Index & KV Namespace
 
 ```bash
-npx wrangler vectorize create kb-index --dimensions=768 --metric=cosine
-npx wrangler kv:namespace create kb-kv-namespace
+npx wrangler vectorize create knowbase-index --dimensions=768 --metric=cosine
+npx wrangler kv namespace create knowbase-kv-namespace
 ```
 
 ### 2. Set Secret Token
