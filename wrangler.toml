@@ -1,0 +1,23 @@
+name = "cf-knowbase-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+account_id = "d2400c41980c1ea80728ad214078178f"
+
+routes = [
+  { pattern = "knowbase-api.tenfy.cn", custom_domain = true }
+]
+
+[ai]
+binding = "AI"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "knowbase-index"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "8892dd218f4b43259ca31b786dc3b422"
+
+[vars]
+AI_MODEL = "@cf/baai/bge-m3"
