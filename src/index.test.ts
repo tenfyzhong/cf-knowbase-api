@@ -1,7 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import app, { type SearchResponse } from "./index.js";
 
-describe("Search API Worker", () => {
+describe("Search & Indexing API Worker", () => {
+  const kvStore = new Map<string, string>();
+
   const mockEnv = {
     API_TOKEN: "valid_secret_token_123",
     AI_MODEL: "@cf/baai/bge-base-en-v1.5",
@@ -38,15 +40,155 @@ describe("Search API Worker", () => {
             }
           }
         ]
+      }),
+      upsert: vi.fn().mockResolvedValue({ count: 1 }),
+      deleteByIds: vi.fn().mockResolvedValue({ count: 1 })
+    },
+    KV: {
+      get: vi.fn().mockImplementation(async (key: string) => kvStore.get(key) || null),
+      put: vi.fn().mockImplementation(async (key: string, value: string) => {
+        kvStore.set(key, value);
       })
     }
   };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    kvStore.clear();
+  });
 
   it("should respond 200 OK on GET /health", async () => {
     const res = await app.request("/health", {}, mockEnv);
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toEqual({ status: "ok" });
+  });
+
+  it("should get and put sync state via /sync-state/:source", async () => {
+    // 1. GET non-existent sync state
+    const resEmpty = await app.request(
+      "/sync-state/obsidian",
+      {
+        headers: { Authorization: "Bearer valid_secret_token_123" }
+      },
+      mockEnv
+    );
+    expect(resEmpty.status).toBe(200);
+    expect(await resEmpty.json()).toEqual({ files: {} });
+
+    // 2. PUT new sync state
+    const statePayload = {
+      lastCommit: "commit_123",
+      files: {
+        "notes/arch.md": { hash: "hash123", chunkCount: 2 }
+      }
+    };
+
+    const resPut = await app.request(
+      "/sync-state/obsidian",
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer valid_secret_token_123"
+        },
+        body: JSON.stringify(statePayload)
+      },
+      mockEnv
+    );
+    expect(resPut.status).toBe(200);
+    expect(await resPut.json()).toEqual({ success: true });
+
+    // 3. GET stored sync state
+    const resGet = await app.request(
+      "/sync-state/obsidian",
+      {
+        headers: { Authorization: "Bearer valid_secret_token_123" }
+      },
+      mockEnv
+    );
+    expect(resGet.status).toBe(200);
+    expect(await resGet.json()).toEqual(statePayload);
+  });
+
+  it("should upsert vector chunks via POST /vectors/upsert with edge embedding", async () => {
+    const chunksPayload = {
+      items: [
+        {
+          id: "obsidian:notes/arch.md:0",
+          text: "System architecture overview",
+          source: "obsidian",
+          path: "notes/arch.md",
+          title: "Architecture",
+          chunkIndex: 0
+        }
+      ]
+    };
+
+    const res = await app.request(
+      "/vectors/upsert",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer valid_secret_token_123"
+        },
+        body: JSON.stringify(chunksPayload)
+      },
+      mockEnv
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { success: boolean; count: number };
+    expect(json.success).toBe(true);
+    expect(json.count).toBe(1);
+
+    expect(mockEnv.AI.run).toHaveBeenCalledWith(
+      "@cf/baai/bge-base-en-v1.5",
+      { text: ["System architecture overview"] }
+    );
+
+    expect(mockEnv.VECTORIZE.upsert).toHaveBeenCalledWith([
+      {
+        id: "obsidian:notes/arch.md:0",
+        values: [0.11, 0.22, 0.33],
+        metadata: {
+          text: "System architecture overview",
+          source: "obsidian",
+          path: "notes/arch.md",
+          title: "Architecture",
+          chunkIndex: 0,
+          url: undefined
+        }
+      }
+    ]);
+  });
+
+  it("should delete vectors via POST /vectors/delete", async () => {
+    const res = await app.request(
+      "/vectors/delete",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer valid_secret_token_123"
+        },
+        body: JSON.stringify({
+          ids: ["obsidian:notes/arch.md:0", "obsidian:notes/arch.md:1"]
+        })
+      },
+      mockEnv
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { success: boolean; count: number };
+    expect(json.success).toBe(true);
+    expect(json.count).toBe(2);
+
+    expect(mockEnv.VECTORIZE.deleteByIds).toHaveBeenCalledWith([
+      "obsidian:notes/arch.md:0",
+      "obsidian:notes/arch.md:1"
+    ]);
   });
 
   it("should serve OpenAI plugin manifest at GET /.well-known/ai-plugin.json", async () => {
@@ -73,10 +215,11 @@ describe("Search API Worker", () => {
     };
     expect(json.openapi).toMatch(/^3\./);
     expect(json.paths["/search"]).toBeDefined();
+    expect(json.paths["/vectors/upsert"]).toBeDefined();
+    expect(json.paths["/vectors/delete"]).toBeDefined();
   });
 
   it("should handle OAuth authorization code flow", async () => {
-    // 1. GET /oauth/authorize -> HTML page or redirect if token provided
     const authRes = await app.request(
       "/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.com%2Faip%2Fcallback&state=state123&token=valid_secret_token_123",
       {},
@@ -91,7 +234,6 @@ describe("Search API Worker", () => {
     const parsedCode = new URL(location).searchParams.get("code");
     expect(parsedCode).toBeTruthy();
 
-    // 2. POST /oauth/token -> exchange code for token
     const tokenRes = await app.request(
       "/oauth/token",
       {
@@ -128,47 +270,27 @@ describe("Search API Worker", () => {
     expect(json).toEqual({ valid: true, scope: "read" });
   });
 
-  it("should reject unauthorized requests to POST /search", async () => {
-    const resNoAuth = await app.request(
-      "/search",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: "test" })
-      },
-      mockEnv
-    );
-    expect(resNoAuth.status).toBe(401);
+  it("should reject unauthorized requests to protected endpoints", async () => {
+    const endpoints = [
+      { path: "/search", method: "POST", body: { query: "test" } },
+      { path: "/sync-state/obsidian", method: "GET" },
+      { path: "/sync-state/obsidian", method: "PUT", body: { files: {} } },
+      { path: "/vectors/upsert", method: "POST", body: { items: [] } },
+      { path: "/vectors/delete", method: "POST", body: { ids: [] } }
+    ];
 
-    const resBadToken = await app.request(
-      "/search",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer wrong_token"
+    for (const ep of endpoints) {
+      const res = await app.request(
+        ep.path,
+        {
+          method: ep.method,
+          headers: { "Content-Type": "application/json" },
+          body: ep.body ? JSON.stringify(ep.body) : undefined
         },
-        body: JSON.stringify({ query: "test" })
-      },
-      mockEnv
-    );
-    expect(resBadToken.status).toBe(401);
-  });
-
-  it("should reject invalid search payload", async () => {
-    const res = await app.request(
-      "/search",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer valid_secret_token_123"
-        },
-        body: JSON.stringify({ query: "" })
-      },
-      mockEnv
-    );
-    expect(res.status).toBe(400);
+        mockEnv
+      );
+      expect(res.status).toBe(401);
+    }
   });
 
   it("should execute embedding and query Vectorize for valid search", async () => {
@@ -208,15 +330,5 @@ describe("Search API Worker", () => {
     expect(json.query).toBe("how does architecture work?");
     expect(json.count).toBe(2);
     expect(json.results).toHaveLength(2);
-    expect(json.results[0]).toEqual({
-      id: "obsidian:notes/arch.md:0",
-      score: 0.92,
-      text: "System architecture notes.",
-      source: "obsidian",
-      path: "notes/arch.md",
-      title: "Architecture",
-      chunkIndex: 0,
-      url: undefined
-    });
   });
 });

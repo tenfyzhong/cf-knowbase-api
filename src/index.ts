@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
 
 export interface Bindings {
@@ -26,8 +26,39 @@ export interface Bindings {
         metadata?: Record<string, unknown>;
       }>;
     }>;
+    upsert: (
+      vectors: Array<{
+        id: string;
+        values: number[];
+        metadata?: Record<string, unknown>;
+      }>
+    ) => Promise<{ count: number }>;
+    deleteByIds: (ids: string[]) => Promise<{ count?: number }>;
+  };
+  KV: {
+    get: (key: string) => Promise<string | null>;
+    put: (key: string, value: string) => Promise<void>;
+    delete: (key: string) => Promise<void>;
   };
 }
+
+export const UpsertChunkItemSchema = z.object({
+  id: z.string().min(1),
+  text: z.string().min(1),
+  source: z.string().min(1),
+  path: z.string().min(1),
+  title: z.string().optional(),
+  chunkIndex: z.number().int().min(0).default(0),
+  url: z.string().optional()
+});
+
+export const UpsertRequestSchema = z.object({
+  items: z.array(UpsertChunkItemSchema)
+});
+
+export const DeleteRequestSchema = z.object({
+  ids: z.array(z.string().min(1))
+});
 
 export const SearchRequestSchema = z.object({
   query: z.string().trim().min(1),
@@ -56,12 +87,143 @@ export interface SearchResponse {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+// Auth helper
+function isAuthorized(c: Context<{ Bindings: Bindings }>): boolean {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return false;
+  }
+  const token = authHeader.slice(7).trim();
+  return token === c.env.API_TOKEN;
+}
+
 // Health check endpoint
 app.get("/health", (c) => {
   return c.json({ status: "ok" });
 });
 
-// OpenAI ChatGPT & Codex Plugin manifest
+// KV Sync State endpoints
+app.get("/sync-state/:source", async (c) => {
+  if (!isAuthorized(c)) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const source = c.req.param("source");
+  const key = `sync_state:${encodeURIComponent(source)}`;
+  const raw = await c.env.KV.get(key);
+
+  if (!raw) {
+    return c.json({ files: {} });
+  }
+
+  try {
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    if ("files" in data) {
+      return c.json(data);
+    }
+    return c.json({ files: data });
+  } catch {
+    return c.json({ files: {} });
+  }
+});
+
+app.put("/sync-state/:source", async (c) => {
+  if (!isAuthorized(c)) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const source = c.req.param("source");
+  const key = `sync_state:${encodeURIComponent(source)}`;
+  const body = await c.req.text();
+
+  await c.env.KV.put(key, body);
+  return c.json({ success: true });
+});
+
+// Vector Upsert endpoint
+app.post("/vectors/upsert", async (c) => {
+  if (!isAuthorized(c)) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Bad Request: Invalid JSON" }, 400);
+  }
+
+  const parseResult = UpsertRequestSchema.safeParse(body);
+  if (!parseResult.success) {
+    return c.json({ error: "Bad Request", details: parseResult.error.format() }, 400);
+  }
+
+  const { items } = parseResult.data;
+  if (items.length === 0) {
+    return c.json({ success: true, count: 0 });
+  }
+
+  const model = c.env.AI_MODEL || "@cf/baai/bge-base-en-v1.5";
+  const batchSize = 25;
+  let totalUpserted = 0;
+
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const texts = batch.map((item) => item.text);
+
+    const aiRes = await c.env.AI.run(model, { text: texts });
+    const embeddings = aiRes.data;
+    if (!embeddings || embeddings.length !== batch.length) {
+      return c.json({ error: "Embedding generation failed" }, 500);
+    }
+
+    const vectors = batch.map((item, idx) => ({
+      id: item.id,
+      values: embeddings[idx],
+      metadata: {
+        text: item.text,
+        source: item.source,
+        path: item.path,
+        title: item.title,
+        chunkIndex: item.chunkIndex,
+        url: item.url
+      }
+    }));
+
+    await c.env.VECTORIZE.upsert(vectors);
+    totalUpserted += vectors.length;
+  }
+
+  return c.json({ success: true, count: totalUpserted });
+});
+
+// Vector Delete endpoint
+app.post("/vectors/delete", async (c) => {
+  if (!isAuthorized(c)) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Bad Request: Invalid JSON" }, 400);
+  }
+
+  const parseResult = DeleteRequestSchema.safeParse(body);
+  if (!parseResult.success) {
+    return c.json({ error: "Bad Request", details: parseResult.error.format() }, 400);
+  }
+
+  const { ids } = parseResult.data;
+  if (ids.length > 0) {
+    await c.env.VECTORIZE.deleteByIds(ids);
+  }
+
+  return c.json({ success: true, count: ids.length });
+});
+
+// OpenAI Plugin manifest
 app.get("/.well-known/ai-plugin.json", (c) => {
   const origin = new URL(c.req.url).origin;
   return c.json({
@@ -95,7 +257,7 @@ app.get("/openapi.json", (c) => {
     openapi: "3.1.0",
     info: {
       title: "Cloudflare Knowledge Base Search API",
-      description: "Semantic search API powered by Cloudflare Workers AI and Vectorize.",
+      description: "Semantic search and vector management API powered by Cloudflare Workers AI and Vectorize.",
       version: "0.1.0"
     },
     servers: [{ url: origin }],
@@ -113,19 +275,9 @@ app.get("/openapi.json", (c) => {
                 schema: {
                   type: "object",
                   properties: {
-                    query: {
-                      type: "string",
-                      description: "The search query or question."
-                    },
-                    topK: {
-                      type: "integer",
-                      default: 5,
-                      description: "Maximum number of search results to return."
-                    },
-                    source: {
-                      type: "string",
-                      description: "Optional source filter (e.g. 'obsidian-notes', 'blog')."
-                    }
+                    query: { type: "string" },
+                    topK: { type: "integer", default: 5 },
+                    source: { type: "string" }
                   },
                   required: ["query"]
                 }
@@ -133,40 +285,79 @@ app.get("/openapi.json", (c) => {
             }
           },
           responses: {
-            "200": {
-              description: "Successful search results",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      query: { type: "string" },
-                      count: { type: "integer" },
-                      results: {
-                        type: "array",
-                        items: {
-                          type: "object",
-                          properties: {
-                            id: { type: "string" },
-                            score: { type: "number" },
-                            text: { type: "string" },
-                            source: { type: "string" },
-                            path: { type: "string" },
-                            title: { type: "string" },
-                            chunkIndex: { type: "integer" },
-                            url: { type: "string" }
-                          },
-                          required: ["id", "score", "text", "source", "path", "chunkIndex"]
-                        }
-                      }
-                    },
-                    required: ["query", "count", "results"]
-                  }
-                }
-              }
-            },
+            "200": { description: "Successful search results" },
             "401": { description: "Unauthorized" },
             "400": { description: "Bad Request" }
+          }
+        }
+      },
+      "/vectors/upsert": {
+        post: {
+          summary: "Upsert Vectors",
+          description: "Generate embeddings and upsert document text chunks into Vectorize.",
+          operationId: "upsertVectors",
+          security: [{ BearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    items: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          id: { type: "string" },
+                          text: { type: "string" },
+                          source: { type: "string" },
+                          path: { type: "string" },
+                          title: { type: "string" },
+                          chunkIndex: { type: "integer" },
+                          url: { type: "string" }
+                        },
+                        required: ["id", "text", "source", "path"]
+                      }
+                    }
+                  },
+                  required: ["items"]
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "Vectors upserted successfully" },
+            "401": { description: "Unauthorized" }
+          }
+        }
+      },
+      "/vectors/delete": {
+        post: {
+          summary: "Delete Vectors",
+          description: "Delete vectors by ID list from Vectorize.",
+          operationId: "deleteVectors",
+          security: [{ BearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    ids: {
+                      type: "array",
+                      items: { type: "string" }
+                    }
+                  },
+                  required: ["ids"]
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "Vectors deleted successfully" },
+            "401": { description: "Unauthorized" }
           }
         }
       }
@@ -182,7 +373,7 @@ app.get("/openapi.json", (c) => {
   });
 });
 
-// OAuth Authorize endpoint (Handles browser auth & mobile ChatGPT redirect)
+// OAuth Authorize endpoint
 app.all("/oauth/authorize", async (c) => {
   const url = new URL(c.req.url);
   const redirectUri = url.searchParams.get("redirect_uri") || "";
@@ -194,11 +385,10 @@ app.all("/oauth/authorize", async (c) => {
     return c.text("Missing required query parameter: redirect_uri", 400);
   }
 
-  // If token is provided and matches or verified, issue authorization code
   if (providedToken && providedToken.trim() === c.env.API_TOKEN) {
     const codePayload = {
       t: c.env.API_TOKEN,
-      exp: Date.now() + 600000 // 10 minutes valid
+      exp: Date.now() + 600000
     };
     const code = btoa(JSON.stringify(codePayload));
     const targetUrl = new URL(redirectUri);
@@ -209,7 +399,6 @@ app.all("/oauth/authorize", async (c) => {
     return c.redirect(targetUrl.toString(), 302);
   }
 
-  // Otherwise, display a clean mobile-friendly authorization page
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -279,12 +468,7 @@ app.post("/oauth/token", async (c) => {
 
 // OAuth Token verification endpoint
 app.get("/oauth/verify", (c) => {
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-  const token = authHeader.slice(7).trim();
-  if (token !== c.env.API_TOKEN) {
+  if (!isAuthorized(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   return c.json({ valid: true, scope: "read" });
@@ -292,16 +476,8 @@ app.get("/oauth/verify", (c) => {
 
 // Search endpoint
 app.post("/search", async (c) => {
-  const authHeader = c.req.header("Authorization");
-  const expectedToken = c.env.API_TOKEN;
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return c.json({ error: "Unauthorized: Missing or malformed Bearer token" }, 401);
-  }
-
-  const token = authHeader.slice(7).trim();
-  if (token !== expectedToken) {
-    return c.json({ error: "Unauthorized: Invalid API token" }, 401);
+  if (!isAuthorized(c)) {
+    return c.json({ error: "Unauthorized: Missing or invalid Bearer token" }, 401);
   }
 
   let body: unknown;
@@ -320,17 +496,12 @@ app.post("/search", async (c) => {
   const model = c.env.AI_MODEL || "@cf/baai/bge-base-en-v1.5";
 
   try {
-    // 1. Generate embedding for query text
-    const embeddingResponse = await c.env.AI.run(model, {
-      text: [query]
-    });
-
+    const embeddingResponse = await c.env.AI.run(model, { text: [query] });
     const queryVector = embeddingResponse.data?.[0];
     if (!queryVector) {
       return c.json({ error: "Internal Error: Failed to generate query embedding" }, 500);
     }
 
-    // 2. Query Vectorize
     const filter = source ? { source } : undefined;
     const searchMatches = await c.env.VECTORIZE.query(queryVector, {
       topK,
@@ -338,7 +509,6 @@ app.post("/search", async (c) => {
       filter
     });
 
-    // 3. Format response results
     const results: SearchResultItem[] = (searchMatches.matches || []).map((match) => {
       const meta = match.metadata || {};
       return {

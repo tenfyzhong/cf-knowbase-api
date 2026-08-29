@@ -10,5 +10,9 @@ binding = "AI"
 binding = "VECTORIZE"
 index_name = "kb-index"
 
+[[kv_namespaces]]
+binding = "KV"
+id = "kb-kv-namespace"
+
 [vars]
 AI_MODEL = "@cf/baai/bge-base-en-v1.5"
