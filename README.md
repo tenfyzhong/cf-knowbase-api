@@ -196,3 +196,5 @@ pnpm run typecheck
 # Start local worker dev server
 pnpm run dev
 ```
+
+GitHub Actions runs the test suite and TypeScript type checking for every pull request and every push to `main`.
