@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import app, { type SearchResponse } from "./index.js";
 
 describe("Search & Indexing API Worker", () => {
@@ -13,6 +13,18 @@ describe("Search & Indexing API Worker", () => {
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/, "");
+  }
+
+  function decodeOAuthTokenGrant(token: string, prefix: string): {
+    expiresAt: number;
+  } {
+    const encodedPayload = token.slice(prefix.length).split(".")[0];
+    const normalized = encodedPayload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(
+      normalized.length + ((4 - (normalized.length % 4)) % 4),
+      "="
+    );
+    return JSON.parse(atob(padded)) as { expiresAt: number };
   }
 
   const mockEnv = {
@@ -75,6 +87,10 @@ describe("Search & Indexing API Worker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     kvStore.clear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("should respond 200 OK on GET /health", async () => {
@@ -317,6 +333,9 @@ describe("Search & Indexing API Worker", () => {
   });
 
   it("should register an OAuth client and exchange a PKCE code for independent tokens", async () => {
+    const initialTime = new Date("2026-08-31T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
     const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
     const resource = "https://knowbase-api.tenfy.cn/mcp";
     const verifier = "pkce-verifier-with-at-least-forty-three-characters-123456";
@@ -467,6 +486,7 @@ describe("Search & Indexing API Worker", () => {
     expect(mcpCallJson.result.isError).toBe(false);
     expect(mcpCallJson.result.structuredContent.count).toBe(1);
 
+    vi.setSystemTime(new Date(initialTime.getTime() + 24 * 60 * 60 * 1000));
     const refreshRes = await app.request(
       "https://knowbase-api.tenfy.cn/oauth/token",
       {
@@ -488,7 +508,19 @@ describe("Search & Indexing API Worker", () => {
     };
     expect(refreshed.access_token).toMatch(/^kb_at_/);
     expect(refreshed.access_token).not.toBe(tokenJson.access_token);
-    expect(refreshed.refresh_token).toBe(tokenJson.refresh_token);
+    expect(refreshed.refresh_token).toMatch(/^kb_rt_/);
+    expect(refreshed.refresh_token).not.toBe(tokenJson.refresh_token);
+    const originalRefreshGrant = decodeOAuthTokenGrant(
+      tokenJson.refresh_token,
+      "kb_rt_"
+    );
+    const rotatedRefreshGrant = decodeOAuthTokenGrant(
+      refreshed.refresh_token,
+      "kb_rt_"
+    );
+    expect(rotatedRefreshGrant.expiresAt).toBe(
+      originalRefreshGrant.expiresAt + 24 * 60 * 60 * 1000
+    );
 
     const writeRes = await app.request(
       "https://knowbase-api.tenfy.cn/vectors/delete",
@@ -503,6 +535,94 @@ describe("Search & Indexing API Worker", () => {
       mockEnv
     );
     expect(writeRes.status).toBe(401);
+  });
+
+  it("should accept Codex loopback redirects with dynamic ports", async () => {
+    const registeredRedirect = "http://127.0.0.1/callback/codex-server-id";
+    const activeRedirect =
+      "http://127.0.0.1:49152/callback/codex-server-id";
+    const resource = "https://knowbase-api.tenfy.cn/mcp";
+    const verifier = "pkce-verifier-with-at-least-forty-three-characters-123456";
+    const challenge = await createPkceChallenge(verifier);
+
+    const registerRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/register",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Codex Knowbase",
+          redirect_uris: [registeredRedirect],
+          token_endpoint_auth_method: "none"
+        })
+      },
+      mockEnv
+    );
+    expect(registerRes.status).toBe(201);
+    const registered = (await registerRes.json()) as { client_id: string };
+
+    const authorizeUrl = new URL(
+      "https://knowbase-api.tenfy.cn/oauth/authorize"
+    );
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", registered.client_id);
+    authorizeUrl.searchParams.set("redirect_uri", activeRedirect);
+    authorizeUrl.searchParams.set("scope", "search:read");
+    authorizeUrl.searchParams.set("resource", resource);
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    const authRes = await app.request(
+      authorizeUrl.toString(),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          token: "valid_secret_token_123"
+        }).toString()
+      },
+      mockEnv
+    );
+    expect(authRes.status).toBe(302);
+    const location = new URL(authRes.headers.get("Location") || "");
+    expect(location.origin + location.pathname).toBe(activeRedirect);
+
+    const tokenRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: location.searchParams.get("code") || "",
+          client_id: registered.client_id,
+          redirect_uri: activeRedirect,
+          resource,
+          code_verifier: verifier
+        }).toString()
+      },
+      mockEnv
+    );
+    expect(tokenRes.status).toBe(200);
+  });
+
+  it("should reject non-loopback HTTP OAuth redirects", async () => {
+    const registerRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/register",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redirect_uris: ["http://example.com/callback"],
+          token_endpoint_auth_method: "none"
+        })
+      },
+      mockEnv
+    );
+
+    expect(registerRes.status).toBe(400);
+    expect(await registerRes.json()).toEqual(
+      expect.objectContaining({ error: "invalid_redirect_uri" })
+    );
   });
 
   it("should expose a stateless MCP search tool and trigger OAuth when unauthenticated", async () => {

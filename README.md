@@ -69,7 +69,9 @@ Get or save incremental synchronization state for a source.
 - `GET|POST /oauth/authorize`
 - `POST /oauth/token`
 
-The authorization page asks the user for the deployment `API_TOKEN`, validates it, and then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. The original `API_TOKEN` is never returned to the MCP client, and rotating it revokes all previously issued OAuth credentials.
+The authorization page asks the user for the deployment `API_TOKEN`, validates it, and then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. Each successful refresh rotates the refresh token and starts a new 30-day validity window. The original `API_TOKEN` is never returned to the MCP client, and rotating it revokes all previously issued OAuth credentials.
+
+Dynamic client registration accepts HTTPS callbacks and native-client loopback callbacks on `http://127.0.0.1` or `http://[::1]`. Loopback callback ports may vary between registration and authorization, which supports the ephemeral local listener used by Codex.
 
 ### 7. `GET /health`
 Healthcheck endpoint.
@@ -89,6 +91,17 @@ Healthcheck endpoint.
 6. Enter the deployment `API_TOKEN` on the Knowbase authorization page.
 
 ChatGPT discovers OAuth through the two `.well-known` endpoints, dynamically registers a public client, performs authorization code + PKCE, and stores only the issued OAuth tokens.
+
+## Connecting from Codex to the Remote MCP Server
+
+Add the MCP URL for the deployment, then authenticate it:
+
+```bash
+codex mcp add knowbase --url https://your-knowbase.example.com/mcp
+codex mcp login knowbase
+```
+
+Codex dynamically registers a public OAuth client and opens the Knowbase authorization page. Enter the deployment `API_TOKEN` there. Codex receives only the issued OAuth access and refresh tokens; its local loopback callback can use an ephemeral port.
 
 ---
 

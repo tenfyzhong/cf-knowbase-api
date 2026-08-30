@@ -144,6 +144,56 @@ interface OAuthTokenGrant {
   expiresAt: number;
 }
 
+function parseOAuthRedirectUri(value: string): URL | null {
+  try {
+    const redirectUri = new URL(value);
+    if (
+      redirectUri.username ||
+      redirectUri.password ||
+      redirectUri.hash ||
+      (redirectUri.protocol !== "https:" &&
+        !isLoopbackRedirectUri(redirectUri))
+    ) {
+      return null;
+    }
+    return redirectUri;
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackRedirectUri(redirectUri: URL): boolean {
+  return (
+    redirectUri.protocol === "http:" &&
+    (redirectUri.hostname === "127.0.0.1" ||
+      redirectUri.hostname === "[::1]")
+  );
+}
+
+function redirectUriMatches(registeredValue: string, requestedValue: string): boolean {
+  if (registeredValue === requestedValue) {
+    return true;
+  }
+
+  const registered = parseOAuthRedirectUri(registeredValue);
+  const requested = parseOAuthRedirectUri(requestedValue);
+  if (
+    !registered ||
+    !requested ||
+    !isLoopbackRedirectUri(registered) ||
+    !isLoopbackRedirectUri(requested)
+  ) {
+    return false;
+  }
+
+  return (
+    registered.protocol === requested.protocol &&
+    registered.hostname === requested.hostname &&
+    registered.pathname === requested.pathname &&
+    registered.search === requested.search
+  );
+}
+
 function getBearerToken(c: Context<{ Bindings: Bindings }>): string | null {
   const authHeader = c.req.header("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -609,14 +659,7 @@ app.post("/oauth/register", async (c) => {
 
   const redirectUris = Array.isArray(body.redirect_uris)
     ? body.redirect_uris.filter((value): value is string => {
-        if (typeof value !== "string") {
-          return false;
-        }
-        try {
-          return new URL(value).protocol === "https:";
-        } catch {
-          return false;
-        }
+        return typeof value === "string" && Boolean(parseOAuthRedirectUri(value));
       })
     : [];
 
@@ -798,7 +841,11 @@ app.all("/oauth/authorize", async (c) => {
       "kb_client_",
       clientId
     );
-    clientIsValid = Boolean(client?.redirectUris.includes(redirectUri));
+    clientIsValid = Boolean(
+      client?.redirectUris.some((registeredRedirectUri) =>
+        redirectUriMatches(registeredRedirectUri, redirectUri)
+      )
+    );
   }
 
   if (!clientIsValid) {
@@ -955,21 +1002,26 @@ app.post("/oauth/token", async (c) => {
       );
     }
 
+    const now = Date.now();
     const accessGrant: OAuthTokenGrant = {
       ...refreshGrant,
       id: crypto.randomUUID(),
-      expiresAt: Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000
+      expiresAt: now + ACCESS_TOKEN_TTL_SECONDS * 1000
     };
-    const accessToken = await signOAuthValue(
-      c.env.API_TOKEN,
-      "kb_at_",
-      accessGrant
-    );
+    const rotatedRefreshGrant: OAuthTokenGrant = {
+      ...refreshGrant,
+      id: crypto.randomUUID(),
+      expiresAt: now + REFRESH_TOKEN_TTL_SECONDS * 1000
+    };
+    const [accessToken, rotatedRefreshToken] = await Promise.all([
+      signOAuthValue(c.env.API_TOKEN, "kb_at_", accessGrant),
+      signOAuthValue(c.env.API_TOKEN, "kb_rt_", rotatedRefreshGrant)
+    ]);
     return c.json({
       access_token: accessToken,
       token_type: "Bearer",
       expires_in: ACCESS_TOKEN_TTL_SECONDS,
-      refresh_token: refreshToken,
+      refresh_token: rotatedRefreshToken,
       scope: refreshGrant.scope
     });
   }
