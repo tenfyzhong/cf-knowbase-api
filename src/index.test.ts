@@ -4,6 +4,17 @@ import app, { type SearchResponse } from "./index.js";
 describe("Search & Indexing API Worker", () => {
   const kvStore = new Map<string, string>();
 
+  async function createPkceChallenge(verifier: string): Promise<string> {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(verifier)
+    );
+    return btoa(String.fromCharCode(...new Uint8Array(digest)))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+  }
+
   const mockEnv = {
     API_TOKEN: "valid_secret_token_123",
     AI_MODEL: "@cf/baai/bge-m3",
@@ -271,10 +282,325 @@ describe("Search & Indexing API Worker", () => {
     expect(Object.keys(json.paths)).toEqual(["/search"]);
   });
 
+  it("should publish MCP OAuth protected resource and authorization server metadata", async () => {
+    const resourceRes = await app.request(
+      "https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource",
+      {},
+      mockEnv
+    );
+    expect(resourceRes.status).toBe(200);
+    expect(await resourceRes.json()).toEqual({
+      resource: "https://knowbase-api.tenfy.cn/mcp",
+      authorization_servers: ["https://knowbase-api.tenfy.cn"],
+      scopes_supported: ["search:read"],
+      resource_documentation: "https://knowbase-api.tenfy.cn"
+    });
+
+    const oauthRes = await app.request(
+      "https://knowbase-api.tenfy.cn/.well-known/oauth-authorization-server",
+      {},
+      mockEnv
+    );
+    expect(oauthRes.status).toBe(200);
+    expect(await oauthRes.json()).toEqual(
+      expect.objectContaining({
+        issuer: "https://knowbase-api.tenfy.cn",
+        authorization_endpoint:
+          "https://knowbase-api.tenfy.cn/oauth/authorize",
+        token_endpoint: "https://knowbase-api.tenfy.cn/oauth/token",
+        registration_endpoint: "https://knowbase-api.tenfy.cn/oauth/register",
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"],
+        scopes_supported: ["search:read"]
+      })
+    );
+  });
+
+  it("should register an OAuth client and exchange a PKCE code for independent tokens", async () => {
+    const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
+    const resource = "https://knowbase-api.tenfy.cn/mcp";
+    const verifier = "pkce-verifier-with-at-least-forty-three-characters-123456";
+    const challenge = await createPkceChallenge(verifier);
+
+    const registerRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/register",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: "ChatGPT Knowbase",
+          redirect_uris: [redirectUri],
+          token_endpoint_auth_method: "none",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"]
+        })
+      },
+      mockEnv
+    );
+    expect(registerRes.status).toBe(201);
+    const registered = (await registerRes.json()) as { client_id: string };
+    expect(registered.client_id).toMatch(/^kb_client_/);
+
+    const authorizeUrl = new URL(
+      "https://knowbase-api.tenfy.cn/oauth/authorize"
+    );
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", registered.client_id);
+    authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+    authorizeUrl.searchParams.set("state", "state123");
+    authorizeUrl.searchParams.set("scope", "search:read");
+    authorizeUrl.searchParams.set("resource", resource);
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    const authRes = await app.request(
+      authorizeUrl.toString(),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          token: "valid_secret_token_123"
+        }).toString()
+      },
+      mockEnv
+    );
+    expect(authRes.status).toBe(302);
+    const location = new URL(authRes.headers.get("Location") || "");
+    expect(location.origin + location.pathname).toBe(redirectUri);
+    expect(location.searchParams.get("state")).toBe("state123");
+    expect(location.searchParams.get("iss")).toBe(
+      "https://knowbase-api.tenfy.cn"
+    );
+    const code = location.searchParams.get("code");
+    expect(code).toBeTruthy();
+
+    const wrongVerifierRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code || "",
+          client_id: registered.client_id,
+          redirect_uri: redirectUri,
+          resource,
+          code_verifier: `${verifier}-wrong`
+        }).toString()
+      },
+      mockEnv
+    );
+    expect(wrongVerifierRes.status).toBe(400);
+    expect(await wrongVerifierRes.json()).toEqual(
+      expect.objectContaining({ error: "invalid_grant" })
+    );
+
+    const tokenRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code || "",
+          client_id: registered.client_id,
+          redirect_uri: redirectUri,
+          resource,
+          code_verifier: verifier
+        }).toString()
+      },
+      mockEnv
+    );
+    expect(tokenRes.status).toBe(200);
+    const tokenJson = (await tokenRes.json()) as {
+      access_token: string;
+      refresh_token: string;
+      expires_in: number;
+      scope: string;
+    };
+    expect(tokenJson.access_token).toMatch(/^kb_at_/);
+    expect(tokenJson.access_token).not.toBe(mockEnv.API_TOKEN);
+    expect(tokenJson.refresh_token).toMatch(/^kb_rt_/);
+    expect(tokenJson.expires_in).toBe(3600);
+    expect(tokenJson.scope).toBe("search:read");
+
+    const verifyRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/verify",
+      {
+        headers: { Authorization: `Bearer ${tokenJson.access_token}` }
+      },
+      mockEnv
+    );
+    expect(verifyRes.status).toBe(200);
+    expect(await verifyRes.json()).toEqual({
+      valid: true,
+      scope: "search:read",
+      resource
+    });
+
+    const mcpCallRes = await app.request(
+      "https://knowbase-api.tenfy.cn/mcp",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenJson.access_token}`
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: {
+            name: "search_knowledge_base",
+            arguments: { query: "architecture", topK: 1 }
+          }
+        })
+      },
+      mockEnv
+    );
+    expect(mcpCallRes.status).toBe(200);
+    const mcpCallJson = (await mcpCallRes.json()) as {
+      result: {
+        isError: boolean;
+        structuredContent: SearchResponse;
+      };
+    };
+    expect(mcpCallJson.result.isError).toBe(false);
+    expect(mcpCallJson.result.structuredContent.count).toBe(1);
+
+    const refreshRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: tokenJson.refresh_token,
+          client_id: registered.client_id,
+          resource
+        }).toString()
+      },
+      mockEnv
+    );
+    expect(refreshRes.status).toBe(200);
+    const refreshed = (await refreshRes.json()) as {
+      access_token: string;
+      refresh_token: string;
+    };
+    expect(refreshed.access_token).toMatch(/^kb_at_/);
+    expect(refreshed.access_token).not.toBe(tokenJson.access_token);
+    expect(refreshed.refresh_token).toBe(tokenJson.refresh_token);
+
+    const writeRes = await app.request(
+      "https://knowbase-api.tenfy.cn/vectors/delete",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenJson.access_token}`
+        },
+        body: JSON.stringify({ ids: [] })
+      },
+      mockEnv
+    );
+    expect(writeRes.status).toBe(401);
+  });
+
+  it("should expose a stateless MCP search tool and trigger OAuth when unauthenticated", async () => {
+    const initializeRes = await app.request(
+      "https://knowbase-api.tenfy.cn/mcp",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "test-client", version: "1.0.0" }
+          }
+        })
+      },
+      mockEnv
+    );
+    expect(initializeRes.status).toBe(200);
+    expect(await initializeRes.json()).toEqual(
+      expect.objectContaining({
+        jsonrpc: "2.0",
+        id: 1,
+        result: expect.objectContaining({
+          protocolVersion: "2025-06-18",
+          serverInfo: { name: "knowbase", version: "0.2.0" }
+        })
+      })
+    );
+
+    const toolsRes = await app.request(
+      "https://knowbase-api.tenfy.cn/mcp",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+          params: {}
+        })
+      },
+      mockEnv
+    );
+    const toolsJson = (await toolsRes.json()) as {
+      result: { tools: Array<Record<string, unknown>> };
+    };
+    expect(toolsJson.result.tools).toHaveLength(1);
+    expect(toolsJson.result.tools[0]).toEqual(
+      expect.objectContaining({
+        name: "search_knowledge_base",
+        securitySchemes: [{ type: "oauth2", scopes: ["search:read"] }]
+      })
+    );
+
+    const callRes = await app.request(
+      "https://knowbase-api.tenfy.cn/mcp",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "search_knowledge_base",
+            arguments: { query: "architecture" }
+          }
+        })
+      },
+      mockEnv
+    );
+    expect(callRes.status).toBe(200);
+    const callJson = (await callRes.json()) as {
+      result: {
+        isError: boolean;
+        _meta: Record<string, string[]>;
+      };
+    };
+    expect(callJson.result.isError).toBe(true);
+    expect(callJson.result._meta["mcp/www_authenticate"][0]).toContain(
+      'resource_metadata="https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource"'
+    );
+  });
+
   it("should handle OAuth authorization code flow", async () => {
     const authRes = await app.request(
-      "/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.com%2Faip%2Fcallback&state=state123&token=valid_secret_token_123",
-      {},
+      "/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.com%2Faip%2Fcallback&state=state123",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          token: "valid_secret_token_123"
+        }).toString()
+      },
       mockEnv
     );
     expect(authRes.status).toBe(302);
@@ -305,7 +631,8 @@ describe("Search & Indexing API Worker", () => {
       access_token: string;
       token_type: string;
     };
-    expect(tokenJson.access_token).toBe("valid_secret_token_123");
+    expect(tokenJson.access_token).toMatch(/^kb_at_/);
+    expect(tokenJson.access_token).not.toBe("valid_secret_token_123");
     expect(tokenJson.token_type).toBe("Bearer");
   });
 

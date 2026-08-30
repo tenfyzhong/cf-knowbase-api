@@ -7,12 +7,17 @@ Cloudflare Worker providing a secure, unified semantic search and vector managem
 - **Workers AI Embedding**: Direct on-edge text & query vectorization using `@cf/baai/bge-m3` (1024 dimensions, multilingual optimized) or custom models.
 - **Vector Management**: Full CRUD support for Vectorize (`/vectors/upsert`, `/vectors/delete`, `/search`) directly via Worker APIs.
 - **KV Sync State Persistence**: Tracks incremental sync states and Git commit hashes (`/sync-state/:source`).
-- **OAuth 2.0 & OpenAPI 3.1 Support**: Built-in OAuth authorization flow and `.well-known/ai-plugin.json` for ChatGPT (Web & Mobile) and Codex integration.
-- **Bearer Token Authentication**: Protects all mutating and search endpoints using Cloudflare Worker secret `API_TOKEN`.
+- **Remote MCP Server**: Stateless Streamable HTTP-compatible MCP endpoint at `/mcp` for ChatGPT Web plugins.
+- **MCP OAuth 2.1**: Protected-resource and authorization-server discovery, dynamic client registration, PKCE S256, short-lived access tokens, and refresh tokens.
+- **OpenAPI 3.1 Compatibility**: Keeps the Custom GPT Action integration available for existing clients.
+- **Scoped Bearer Authentication**: The deployment `API_TOKEN` protects administrative endpoints, while OAuth tokens can only search the knowledge base.
 
 ## Endpoints
 
-### 1. `POST /search`
+### 1. `POST /mcp`
+Stateless remote MCP endpoint exposing the authenticated `search_knowledge_base` tool.
+
+### 2. `POST /search`
 Semantic search endpoint.
 
 - **Request Body**:
@@ -24,7 +29,7 @@ Semantic search endpoint.
 }
 ```
 
-### 2. `POST /vectors/upsert`
+### 3. `POST /vectors/upsert`
 Generate embeddings and upsert document text chunks into Vectorize.
 
 - **Request Body**:
@@ -43,7 +48,7 @@ Generate embeddings and upsert document text chunks into Vectorize.
 }
 ```
 
-### 3. `POST /vectors/delete`
+### 4. `POST /vectors/delete`
 Delete vectors by ID list.
 
 - **Request Body**:
@@ -53,15 +58,41 @@ Delete vectors by ID list.
 }
 ```
 
-### 4. `GET /sync-state/:source` & `PUT /sync-state/:source`
+### 5. `GET /sync-state/:source` & `PUT /sync-state/:source`
 Get or save incremental synchronization state for a source.
 
-### 5. `GET /health`
+### 6. OAuth discovery and authorization
+
+- `GET /.well-known/oauth-protected-resource`
+- `GET /.well-known/oauth-authorization-server`
+- `POST /oauth/register`
+- `GET|POST /oauth/authorize`
+- `POST /oauth/token`
+
+The authorization page asks the user for the deployment `API_TOKEN`, validates it, and then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. The original `API_TOKEN` is never returned to the MCP client, and rotating it revokes all previously issued OAuth credentials.
+
+### 7. `GET /health`
 Healthcheck endpoint.
 
 ---
 
-## Connecting to ChatGPT (Web & Mobile App Setup)
+## Connecting as a ChatGPT Web Plugin
+
+1. Deploy the Worker on a public HTTPS domain.
+2. Enable **Developer mode** under **ChatGPT Settings > Security and login**.
+3. Open **ChatGPT Plugins**, add an MCP server, and enter:
+   ```text
+   https://knowbase-api.tenfy.cn/mcp
+   ```
+4. Review the discovered `search_knowledge_base` tool.
+5. Click **Connect**, or call the tool for the first time.
+6. Enter the deployment `API_TOKEN` on the Knowbase authorization page.
+
+ChatGPT discovers OAuth through the two `.well-known` endpoints, dynamically registers a public client, performs authorization code + PKCE, and stores only the issued OAuth tokens.
+
+---
+
+## Legacy Custom GPT Action Setup
 
 You can connect your knowledge base to **ChatGPT Web** and the **ChatGPT Mobile App (iOS / Android)** using a Custom GPT Action with OAuth 2.0 authentication. Configuring it once on Web will automatically sync and enable it on your mobile devices.
 
