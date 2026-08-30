@@ -37,7 +37,11 @@ export interface Bindings {
   };
   KV: {
     get: (key: string) => Promise<string | null>;
-    put: (key: string, value: string) => Promise<void>;
+    put: (
+      key: string,
+      value: string,
+      options?: { expirationTtl?: number }
+    ) => Promise<void>;
     delete: (key: string) => Promise<void>;
     list: (options?: { prefix?: string; limit?: number; cursor?: string }) => Promise<{
       keys: Array<{ name: string; expiration?: number; metadata?: unknown }>;
@@ -111,14 +115,216 @@ export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Auth helper
-function isAuthorized(c: Context<{ Bindings: Bindings }>): boolean {
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+const MCP_SCOPE = "search:read";
+const ACCESS_TOKEN_TTL_SECONDS = 3600;
+const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+const AUTHORIZATION_CODE_TTL_SECONDS = 10 * 60;
+
+interface OAuthClient {
+  id: string;
+  redirectUris: string[];
+  createdAt: number;
+}
+
+interface AuthorizationCodeGrant {
+  id: string;
+  clientId: string;
+  redirectUri: string;
+  scope: string;
+  resource: string;
+  codeChallenge?: string;
+  expiresAt: number;
+}
+
+interface OAuthTokenGrant {
+  id: string;
+  clientId: string;
+  scope: string;
+  resource: string;
+  expiresAt: number;
+}
+
+function parseOAuthRedirectUri(value: string): URL | null {
+  try {
+    const redirectUri = new URL(value);
+    if (
+      redirectUri.username ||
+      redirectUri.password ||
+      redirectUri.hash ||
+      (redirectUri.protocol !== "https:" &&
+        !isLoopbackRedirectUri(redirectUri))
+    ) {
+      return null;
+    }
+    return redirectUri;
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackRedirectUri(redirectUri: URL): boolean {
+  return (
+    redirectUri.protocol === "http:" &&
+    (redirectUri.hostname === "127.0.0.1" ||
+      redirectUri.hostname === "[::1]")
+  );
+}
+
+function redirectUriMatches(registeredValue: string, requestedValue: string): boolean {
+  if (registeredValue === requestedValue) {
+    return true;
+  }
+
+  const registered = parseOAuthRedirectUri(registeredValue);
+  const requested = parseOAuthRedirectUri(requestedValue);
+  if (
+    !registered ||
+    !requested ||
+    !isLoopbackRedirectUri(registered) ||
+    !isLoopbackRedirectUri(requested)
+  ) {
     return false;
   }
-  const token = authHeader.slice(7).trim();
-  return token === c.env.API_TOKEN;
+
+  return (
+    registered.protocol === requested.protocol &&
+    registered.hostname === requested.hostname &&
+    registered.pathname === requested.pathname &&
+    registered.search === requested.search
+  );
+}
+
+function getBearerToken(c: Context<{ Bindings: Bindings }>): string | null {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return null;
+  }
+  return authHeader.slice(7).trim() || null;
+}
+
+function isApiTokenAuthorized(c: Context<{ Bindings: Bindings }>): boolean {
+  return getBearerToken(c) === c.env.API_TOKEN;
+}
+
+async function getOAuthTokenGrant(
+  c: Context<{ Bindings: Bindings }>,
+  expectedResource?: string
+): Promise<OAuthTokenGrant | null> {
+  const token = getBearerToken(c);
+  if (!token) {
+    return null;
+  }
+
+  const grant = await verifyOAuthValue<OAuthTokenGrant>(
+    c.env.API_TOKEN,
+    "kb_at_",
+    token
+  );
+  if (!grant || grant.expiresAt <= Date.now()) {
+    return null;
+  }
+  if (expectedResource && grant.resource !== expectedResource) {
+    return null;
+  }
+  if (!grant.scope.split(/\s+/).some((scope) => scope === MCP_SCOPE || scope === "read")) {
+    return null;
+  }
+  return grant;
+}
+
+function base64Url(bytes: ArrayBufferLike): string {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function base64UrlText(value: string): string {
+  return base64Url(new TextEncoder().encode(value).buffer);
+}
+
+function decodeBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "="
+  );
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+
+async function hmacKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+async function signOAuthValue<T>(
+  secret: string,
+  prefix: string,
+  value: T
+): Promise<string> {
+  const payload = base64UrlText(JSON.stringify(value));
+  const signedValue = `${prefix}${payload}`;
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    await hmacKey(secret),
+    new TextEncoder().encode(signedValue)
+  );
+  return `${signedValue}.${base64Url(signature)}`;
+}
+
+async function verifyOAuthValue<T>(
+  secret: string,
+  prefix: string,
+  value: string
+): Promise<T | null> {
+  if (!value.startsWith(prefix)) {
+    return null;
+  }
+  const separator = value.lastIndexOf(".");
+  if (separator <= prefix.length) {
+    return null;
+  }
+
+  const signedValue = value.slice(0, separator);
+  const signature = value.slice(separator + 1);
+  try {
+    const valid = await crypto.subtle.verify(
+      "HMAC",
+      await hmacKey(secret),
+      decodeBase64Url(signature),
+      new TextEncoder().encode(signedValue)
+    );
+    if (!valid) {
+      return null;
+    }
+    const payload = signedValue.slice(prefix.length);
+    return JSON.parse(
+      new TextDecoder().decode(decodeBase64Url(payload))
+    ) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function createPkceChallenge(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(verifier)
+  );
+  return base64Url(digest);
+}
+
+function htmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 // Health check endpoint
@@ -141,7 +347,7 @@ app.get("/favicon.ico", (c) => {
 
 // KV Sync State endpoints
 app.get("/sync-state/:source", async (c) => {
-  if (!isAuthorized(c)) {
+  if (!isApiTokenAuthorized(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
@@ -165,7 +371,7 @@ app.get("/sync-state/:source", async (c) => {
 });
 
 app.put("/sync-state/:source", async (c) => {
-  if (!isAuthorized(c)) {
+  if (!isApiTokenAuthorized(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
@@ -179,7 +385,7 @@ app.put("/sync-state/:source", async (c) => {
 
 // Vector Upsert endpoint
 app.post("/vectors/upsert", async (c) => {
-  if (!isAuthorized(c)) {
+  if (!isApiTokenAuthorized(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
@@ -303,7 +509,7 @@ app.post("/vectors/upsert", async (c) => {
 
 // Vector Delete endpoint
 app.post("/vectors/delete", async (c) => {
-  if (!isAuthorized(c)) {
+  if (!isApiTokenAuthorized(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
@@ -345,7 +551,7 @@ function generateVectorId(sourceName: string, filePath: string, chunkIndex: numb
 
 // Vector Clear endpoint
 app.post("/vectors/clear", async (c) => {
-  if (!isAuthorized(c)) {
+  if (!isApiTokenAuthorized(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
@@ -401,31 +607,98 @@ app.post("/vectors/clear", async (c) => {
   }
 });
 
-// OpenAI Plugin manifest
-app.get("/.well-known/ai-plugin.json", (c) => {
+app.get("/.well-known/oauth-protected-resource", (c) => {
   const origin = new URL(c.req.url).origin;
   return c.json({
-    schema_version: "v1",
-    name_for_human: "Cloudflare Knowledge Base",
-    name_for_model: "knowbase",
-    description_for_human: "Semantic search over your personal notes, documents, and web content.",
-    description_for_model:
-      "Plugin for semantically searching and retrieving personal notes, obsidian documents, code repositories, and articles stored in Cloudflare Vectorize.",
-    auth: {
-      type: "oauth",
-      client_url: `${origin}/oauth/authorize`,
-      scope: "read",
-      authorization_url: `${origin}/oauth/token`,
-      authorization_content_type: "application/json"
-    },
-    api: {
-      type: "openapi",
-      url: "/openapi.json"
-    },
-    logo_url: `${origin}/favicon.svg`,
-    contact_email: "tenfy@tenfy.cn",
-    legal_info_url: origin
+    resource: `${origin}/mcp`,
+    authorization_servers: [origin],
+    scopes_supported: [MCP_SCOPE],
+    resource_documentation: origin
   });
+});
+
+app.get("/.well-known/oauth-authorization-server", (c) => {
+  const origin = new URL(c.req.url).origin;
+  return c.json({
+    issuer: origin,
+    authorization_endpoint: `${origin}/oauth/authorize`,
+    token_endpoint: `${origin}/oauth/token`,
+    registration_endpoint: `${origin}/oauth/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    token_endpoint_auth_methods_supported: ["none"],
+    code_challenge_methods_supported: ["S256"],
+    scopes_supported: [MCP_SCOPE],
+    authorization_response_iss_parameter_supported: true
+  });
+});
+
+app.post("/oauth/register", async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = (await c.req.json()) as Record<string, unknown>;
+  } catch {
+    return c.json(
+      {
+        error: "invalid_client_metadata",
+        error_description: "Registration body must be valid JSON"
+      },
+      400
+    );
+  }
+
+  const redirectUris = Array.isArray(body.redirect_uris)
+    ? body.redirect_uris.filter((value): value is string => {
+        return typeof value === "string" && Boolean(parseOAuthRedirectUri(value));
+      })
+    : [];
+
+  if (redirectUris.length === 0) {
+    return c.json(
+      {
+        error: "invalid_redirect_uri",
+        error_description: "At least one HTTPS redirect URI is required"
+      },
+      400
+    );
+  }
+  if (
+    body.token_endpoint_auth_method &&
+    body.token_endpoint_auth_method !== "none"
+  ) {
+    return c.json(
+      {
+        error: "invalid_client_metadata",
+        error_description: "Only public PKCE clients are supported"
+      },
+      400
+    );
+  }
+
+  const client: OAuthClient = {
+    id: crypto.randomUUID(),
+    redirectUris,
+    createdAt: Date.now()
+  };
+  const clientId = await signOAuthValue(
+    c.env.API_TOKEN,
+    "kb_client_",
+    client
+  );
+
+  return c.json(
+    {
+      client_id: clientId,
+      client_id_issued_at: Math.floor(client.createdAt / 1000),
+      client_name:
+        typeof body.client_name === "string" ? body.client_name : "Knowbase",
+      redirect_uris: redirectUris,
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"]
+    },
+    201
+  );
 });
 
 // OpenAPI 3.1.0 Specification
@@ -484,26 +757,127 @@ app.get("/openapi.json", (c) => {
 // OAuth Authorize endpoint
 app.all("/oauth/authorize", async (c) => {
   const url = new URL(c.req.url);
+  const origin = url.origin;
+  const responseType = url.searchParams.get("response_type") || "";
+  const clientId = url.searchParams.get("client_id") || "";
   const redirectUri = url.searchParams.get("redirect_uri") || "";
   const state = url.searchParams.get("state") || "";
+  const requestedScope = url.searchParams.get("scope") || "";
+  const resource = url.searchParams.get("resource") || `${origin}/mcp`;
+  const codeChallenge = url.searchParams.get("code_challenge") || "";
+  const codeChallengeMethod =
+    url.searchParams.get("code_challenge_method") || "";
   const providedToken =
-    url.searchParams.get("token") || (await c.req.parseBody().then((b) => b["token"] as string).catch(() => ""));
+    c.req.method === "POST"
+      ? await c.req
+          .parseBody()
+          .then((body) => body["token"] as string)
+          .catch(() => "")
+      : "";
 
-  if (!redirectUri) {
-    return c.text("Missing required query parameter: redirect_uri", 400);
+  if (responseType !== "code" || !clientId || !redirectUri) {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description:
+          "response_type=code, client_id, and redirect_uri are required"
+      },
+      400
+    );
+  }
+
+  const isLegacyClient = clientId === "chatgpt";
+  let clientIsValid = false;
+  if (isLegacyClient) {
+    try {
+      const redirect = new URL(redirectUri);
+      clientIsValid =
+        redirect.protocol === "https:" &&
+        (redirect.hostname === "chatgpt.com" ||
+          redirect.hostname === "chat.openai.com");
+    } catch {
+      clientIsValid = false;
+    }
+  } else {
+    const client = await verifyOAuthValue<OAuthClient>(
+      c.env.API_TOKEN,
+      "kb_client_",
+      clientId
+    );
+    clientIsValid = Boolean(
+      client?.redirectUris.some((registeredRedirectUri) =>
+        redirectUriMatches(registeredRedirectUri, redirectUri)
+      )
+    );
+  }
+
+  if (!clientIsValid) {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description: "Unknown client or redirect URI"
+      },
+      400
+    );
+  }
+  if (!isLegacyClient && resource !== `${origin}/mcp`) {
+    return c.json(
+      {
+        error: "invalid_target",
+        error_description: "The resource must identify this MCP server"
+      },
+      400
+    );
+  }
+  if (
+    !isLegacyClient &&
+    (!codeChallenge || codeChallengeMethod !== "S256")
+  ) {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description: "PKCE with code_challenge_method=S256 is required"
+      },
+      400
+    );
+  }
+  if (
+    !isLegacyClient &&
+    requestedScope &&
+    requestedScope.split(/\s+/).some((scope) => scope !== MCP_SCOPE)
+  ) {
+    return c.json(
+      {
+        error: "invalid_scope",
+        error_description: `Only ${MCP_SCOPE} is supported`
+      },
+      400
+    );
   }
 
   if (providedToken && providedToken.trim() === c.env.API_TOKEN) {
-    const codePayload = {
-      t: c.env.API_TOKEN,
-      exp: Date.now() + 600000
+    const scope = requestedScope || (isLegacyClient ? "read" : MCP_SCOPE);
+    const grant: AuthorizationCodeGrant = {
+      id: crypto.randomUUID(),
+      clientId,
+      redirectUri,
+      scope,
+      resource,
+      codeChallenge: codeChallenge || undefined,
+      expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_SECONDS * 1000
     };
-    const code = btoa(JSON.stringify(codePayload));
+    const code = await signOAuthValue(
+      c.env.API_TOKEN,
+      "kb_code_",
+      grant
+    );
+
     const targetUrl = new URL(redirectUri);
     targetUrl.searchParams.set("code", code);
     if (state) {
       targetUrl.searchParams.set("state", state);
     }
+    targetUrl.searchParams.set("iss", origin);
     return c.redirect(targetUrl.toString(), 302);
   }
 
@@ -531,7 +905,7 @@ app.all("/oauth/authorize", async (c) => {
     <div class="icon">${FAVICON_SVG}</div>
     <h2>Authorize Connection</h2>
     <p>Connect your personal Knowledge Base to ChatGPT or Codex.</p>
-    <form method="POST" action="${url.pathname}${url.search}">
+    <form method="POST" action="${htmlEscape(url.pathname + url.search)}">
       <label for="token">API Secret Token</label>
       <input type="password" id="token" name="token" placeholder="Enter your API_TOKEN" required autofocus />
       <button type="submit">Authorize & Connect</button>
@@ -545,6 +919,8 @@ app.all("/oauth/authorize", async (c) => {
 
 // OAuth Token exchange endpoint
 app.post("/oauth/token", async (c) => {
+  c.header("Cache-Control", "no-store");
+  c.header("Pragma", "no-cache");
   let body: Record<string, unknown> = {};
   const contentType = c.req.header("Content-Type") || "";
 
@@ -554,41 +930,206 @@ app.post("/oauth/token", async (c) => {
     body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>;
   }
 
-  const code = (body["code"] as string) || c.req.query("code") || "";
-  if (!code) {
-    return c.json({ error: "invalid_request", error_description: "Missing authorization code" }, 400);
-  }
+  const grantType =
+    (body["grant_type"] as string) ||
+    c.req.query("grant_type") ||
+    "authorization_code";
+  const clientId =
+    (body["client_id"] as string) || c.req.query("client_id") || "";
+  const resource =
+    (body["resource"] as string) || c.req.query("resource") || "";
 
-  try {
-    const decoded = JSON.parse(atob(code)) as { t?: string; exp?: number };
-    if (!decoded.t || decoded.t !== c.env.API_TOKEN) {
-      return c.json({ error: "invalid_grant", error_description: "Invalid authorization code" }, 400);
-    }
-    if (decoded.exp && decoded.exp < Date.now()) {
-      return c.json({ error: "invalid_grant", error_description: "Authorization code expired" }, 400);
+  if (grantType === "refresh_token") {
+    const refreshToken =
+      (body["refresh_token"] as string) ||
+      c.req.query("refresh_token") ||
+      "";
+    const refreshGrant = await verifyOAuthValue<OAuthTokenGrant>(
+      c.env.API_TOKEN,
+      "kb_rt_",
+      refreshToken
+    );
+    if (
+      !refreshGrant ||
+      refreshGrant.expiresAt <= Date.now() ||
+      (refreshGrant.clientId !== "chatgpt" && (!clientId || !resource)) ||
+      (clientId && refreshGrant.clientId !== clientId) ||
+      (resource && refreshGrant.resource !== resource)
+    ) {
+      return c.json(
+        {
+          error: "invalid_grant",
+          error_description: "Invalid or expired refresh token"
+        },
+        400
+      );
     }
 
+    const now = Date.now();
+    const accessGrant: OAuthTokenGrant = {
+      ...refreshGrant,
+      id: crypto.randomUUID(),
+      expiresAt: now + ACCESS_TOKEN_TTL_SECONDS * 1000
+    };
+    const rotatedRefreshGrant: OAuthTokenGrant = {
+      ...refreshGrant,
+      id: crypto.randomUUID(),
+      expiresAt: now + REFRESH_TOKEN_TTL_SECONDS * 1000
+    };
+    const [accessToken, rotatedRefreshToken] = await Promise.all([
+      signOAuthValue(c.env.API_TOKEN, "kb_at_", accessGrant),
+      signOAuthValue(c.env.API_TOKEN, "kb_rt_", rotatedRefreshGrant)
+    ]);
     return c.json({
-      access_token: c.env.API_TOKEN,
+      access_token: accessToken,
       token_type: "Bearer",
-      expires_in: 31536000
+      expires_in: ACCESS_TOKEN_TTL_SECONDS,
+      refresh_token: rotatedRefreshToken,
+      scope: refreshGrant.scope
     });
-  } catch {
-    return c.json({ error: "invalid_grant", error_description: "Malformed authorization code" }, 400);
   }
+
+  if (grantType !== "authorization_code") {
+    return c.json(
+      {
+        error: "unsupported_grant_type",
+        error_description:
+          "Only authorization_code and refresh_token are supported"
+      },
+      400
+    );
+  }
+
+  const code = (body["code"] as string) || c.req.query("code") || "";
+  const redirectUri =
+    (body["redirect_uri"] as string) || c.req.query("redirect_uri") || "";
+  const codeVerifier =
+    (body["code_verifier"] as string) || c.req.query("code_verifier") || "";
+  const grant = await verifyOAuthValue<AuthorizationCodeGrant>(
+    c.env.API_TOKEN,
+    "kb_code_",
+    code
+  );
+  if (
+    !grant ||
+    grant.expiresAt <= Date.now() ||
+    (grant.clientId !== "chatgpt" && (!clientId || !resource)) ||
+    (clientId && grant.clientId !== clientId) ||
+    grant.redirectUri !== redirectUri ||
+    (resource && grant.resource !== resource)
+  ) {
+    return c.json(
+      {
+        error: "invalid_grant",
+        error_description: "Invalid or expired authorization code"
+      },
+      400
+    );
+  }
+  if (grant.codeChallenge) {
+    const actualChallenge = codeVerifier
+      ? await createPkceChallenge(codeVerifier)
+      : "";
+    if (actualChallenge !== grant.codeChallenge) {
+      return c.json(
+        {
+          error: "invalid_grant",
+          error_description: "PKCE verification failed"
+        },
+        400
+      );
+    }
+  }
+
+  const now = Date.now();
+  const accessGrant: OAuthTokenGrant = {
+    id: crypto.randomUUID(),
+    clientId: grant.clientId,
+    scope: grant.scope,
+    resource: grant.resource,
+    expiresAt: now + ACCESS_TOKEN_TTL_SECONDS * 1000
+  };
+  const refreshGrant: OAuthTokenGrant = {
+    id: crypto.randomUUID(),
+    clientId: grant.clientId,
+    scope: grant.scope,
+    resource: grant.resource,
+    expiresAt: now + REFRESH_TOKEN_TTL_SECONDS * 1000
+  };
+  const [accessToken, refreshToken] = await Promise.all([
+    signOAuthValue(c.env.API_TOKEN, "kb_at_", accessGrant),
+    signOAuthValue(c.env.API_TOKEN, "kb_rt_", refreshGrant)
+  ]);
+
+  return c.json({
+    access_token: accessToken,
+    token_type: "Bearer",
+    expires_in: ACCESS_TOKEN_TTL_SECONDS,
+    refresh_token: refreshToken,
+    scope: grant.scope
+  });
 });
 
 // OAuth Token verification endpoint
-app.get("/oauth/verify", (c) => {
-  if (!isAuthorized(c)) {
+app.get("/oauth/verify", async (c) => {
+  const grant = await getOAuthTokenGrant(c);
+  if (!grant) {
     return c.json({ error: "Unauthorized" }, 401);
   }
-  return c.json({ valid: true, scope: "read" });
+  return c.json({
+    valid: true,
+    scope: grant.scope,
+    resource: grant.resource
+  });
 });
+
+async function searchKnowledgeBase(
+  env: Bindings,
+  request: SearchRequest
+): Promise<SearchResponse> {
+  const { query, topK, source } = request;
+  const model = env.AI_MODEL || "@cf/baai/bge-m3";
+  const embeddingResponse = await env.AI.run(model, { text: [query] });
+  const queryVector = embeddingResponse.data?.[0];
+  if (!queryVector) {
+    throw new Error("Failed to generate query embedding");
+  }
+
+  const fetchLimit = source ? Math.max(topK * 4, 30) : topK;
+  const searchMatches = await env.VECTORIZE.query(queryVector, {
+    topK: fetchLimit,
+    returnMetadata: "all"
+  });
+
+  let results: SearchResultItem[] = (searchMatches.matches || []).map((match) => {
+    const meta = match.metadata || {};
+    return {
+      id: match.id,
+      score: match.score,
+      text: typeof meta.text === "string" ? meta.text : "",
+      source: typeof meta.source === "string" ? meta.source : "",
+      path: typeof meta.path === "string" ? meta.path : "",
+      title: typeof meta.title === "string" ? meta.title : undefined,
+      chunkIndex: typeof meta.chunkIndex === "number" ? meta.chunkIndex : 0,
+      url: typeof meta.url === "string" ? meta.url : undefined
+    };
+  });
+
+  if (source) {
+    results = results.filter((result) => result.source === source);
+  }
+
+  results = results.slice(0, topK);
+  return {
+    query,
+    count: results.length,
+    results
+  };
+}
 
 // Search endpoint
 app.post("/search", async (c) => {
-  if (!isAuthorized(c)) {
+  if (!(await getOAuthTokenGrant(c))) {
     return c.json({ error: "Unauthorized: Missing or invalid Bearer token" }, 401);
   }
 
@@ -604,52 +1145,212 @@ app.post("/search", async (c) => {
     return c.json({ error: "Bad Request", details: parseResult.error.format() }, 400);
   }
 
-  const { query, topK, source } = parseResult.data;
-  const model = c.env.AI_MODEL || "@cf/baai/bge-m3";
-
   try {
-    const embeddingResponse = await c.env.AI.run(model, { text: [query] });
-    const queryVector = embeddingResponse.data?.[0];
-    if (!queryVector) {
-      return c.json({ error: "Internal Error: Failed to generate query embedding" }, 500);
-    }
-
-    const fetchLimit = source ? Math.max(topK * 4, 30) : topK;
-    const searchMatches = await c.env.VECTORIZE.query(queryVector, {
-      topK: fetchLimit,
-      returnMetadata: "all"
-    });
-
-    let results: SearchResultItem[] = (searchMatches.matches || []).map((match) => {
-      const meta = match.metadata || {};
-      return {
-        id: match.id,
-        score: match.score,
-        text: typeof meta.text === "string" ? meta.text : "",
-        source: typeof meta.source === "string" ? meta.source : "",
-        path: typeof meta.path === "string" ? meta.path : "",
-        title: typeof meta.title === "string" ? meta.title : undefined,
-        chunkIndex: typeof meta.chunkIndex === "number" ? meta.chunkIndex : 0,
-        url: typeof meta.url === "string" ? meta.url : undefined
-      };
-    });
-
-    if (source) {
-      results = results.filter((r) => r.source === source);
-    }
-
-    results = results.slice(0, topK);
-    const response: SearchResponse = {
-      query,
-      count: results.length,
-      results
-    };
-
-    return c.json(response);
+    return c.json(await searchKnowledgeBase(c.env, parseResult.data));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: "Search failed", message }, 500);
   }
+});
+
+const SEARCH_TOOL = {
+  name: "search_knowledge_base",
+  title: "Search Knowledge Base",
+  description:
+    "Semantically search personal notes, documentation, repositories, and articles stored in the knowledge base.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Natural-language semantic search query"
+      },
+      topK: {
+        type: "integer",
+        minimum: 1,
+        maximum: 50,
+        default: 5,
+        description: "Maximum number of results"
+      },
+      source: {
+        type: "string",
+        description: "Optional exact source filter"
+      }
+    },
+    required: ["query"],
+    additionalProperties: false
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string" },
+      count: { type: "integer" },
+      results: { type: "array", items: { type: "object" } }
+    },
+    required: ["query", "count", "results"]
+  },
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false
+  },
+  securitySchemes: [{ type: "oauth2", scopes: [MCP_SCOPE] }],
+  _meta: {
+    securitySchemes: [{ type: "oauth2", scopes: [MCP_SCOPE] }]
+  }
+};
+
+function oauthChallenge(origin: string, description: string): string {
+  return `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource", error="invalid_token", error_description="${description}"`;
+}
+
+app.post("/mcp", async (c) => {
+  let message: {
+    jsonrpc?: string;
+    id?: string | number | null;
+    method?: string;
+    params?: Record<string, unknown>;
+  };
+  try {
+    message = (await c.req.json()) as typeof message;
+  } catch {
+    return c.json({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32700, message: "Parse error" }
+    });
+  }
+
+  const id = message.id ?? null;
+  if (message.jsonrpc !== "2.0" || !message.method) {
+    return c.json({
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32600, message: "Invalid Request" }
+    });
+  }
+
+  if (message.method.startsWith("notifications/")) {
+    return c.body(null, 202);
+  }
+
+  if (message.method === "initialize") {
+    const params = message.params || {};
+    const protocolVersion =
+      typeof params.protocolVersion === "string"
+        ? params.protocolVersion
+        : "2025-06-18";
+    return c.json({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "knowbase", version: "0.2.0" },
+        instructions:
+          "Use search_knowledge_base for semantic retrieval from the user's private knowledge base."
+      }
+    });
+  }
+
+  if (message.method === "ping") {
+    return c.json({ jsonrpc: "2.0", id, result: {} });
+  }
+
+  if (message.method === "tools/list") {
+    return c.json({
+      jsonrpc: "2.0",
+      id,
+      result: { tools: [SEARCH_TOOL] }
+    });
+  }
+
+  if (message.method === "tools/call") {
+    const params = message.params || {};
+    if (params.name !== SEARCH_TOOL.name) {
+      return c.json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32602, message: "Unknown tool" }
+      });
+    }
+
+    const origin = new URL(c.req.url).origin;
+    const grant = await getOAuthTokenGrant(c, `${origin}/mcp`);
+    if (!grant) {
+      return c.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: "Authentication required: connect Knowbase to continue."
+            }
+          ],
+          _meta: {
+            "mcp/www_authenticate": [
+              oauthChallenge(origin, "Connect Knowbase to search private data")
+            ]
+          },
+          isError: true
+        }
+      });
+    }
+
+    const parsedArguments = SearchRequestSchema.safeParse(params.arguments || {});
+    if (!parsedArguments.success) {
+      return c.json({
+        jsonrpc: "2.0",
+        id,
+        error: {
+          code: -32602,
+          message: "Invalid tool arguments",
+          data: parsedArguments.error.format()
+        }
+      });
+    }
+
+    try {
+      const response = await searchKnowledgeBase(c.env, parsedArguments.data);
+      return c.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(response)
+            }
+          ],
+          structuredContent: response,
+          isError: false
+        }
+      });
+    } catch (err) {
+      const messageText = err instanceof Error ? err.message : String(err);
+      return c.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: `Search failed: ${messageText}` }],
+          isError: true
+        }
+      });
+    }
+  }
+
+  return c.json({
+    jsonrpc: "2.0",
+    id,
+    error: { code: -32601, message: "Method not found" }
+  });
+});
+
+app.on(["GET", "DELETE"], "/mcp", (c) => {
+  c.header("Allow", "POST");
+  return c.json({ error: "Method Not Allowed" }, 405);
 });
 
 export default app;
