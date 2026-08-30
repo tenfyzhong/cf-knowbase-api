@@ -181,6 +181,23 @@ npx wrangler secret put API_TOKEN
 pnpm run deploy
 ```
 
+### Automatic production deployment
+
+Pushing a version tag matching `v*` runs the GitHub Actions deployment workflow. The workflow installs locked dependencies, runs tests and type checking, and then deploys `cf-knowbase-api` to the Cloudflare production Worker configured in `wrangler.toml`.
+
+Configure the following GitHub Actions repository secret before creating a release tag:
+
+- `CLOUDFLARE_API_TOKEN`: A Cloudflare API token created from the **Edit Cloudflare Workers** template and restricted to account `d2400c41980c1ea80728ad214078178f`.
+
+Create and push a signed release tag after the release commit is on `main`:
+
+```bash
+git tag -s v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
+```
+
+The deployment appears in the GitHub `production` environment and serves `https://knowbase-api.tenfy.cn`.
+
 ## Local Development & Testing
 
 ```bash
