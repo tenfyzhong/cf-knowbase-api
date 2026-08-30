@@ -215,16 +215,6 @@ async function getOAuthTokenGrant(
     return null;
   }
 
-  if (token === c.env.API_TOKEN) {
-    return {
-      id: "api-token",
-      clientId: "api-token",
-      scope: "read write",
-      resource: expectedResource || "",
-      expiresAt: Number.MAX_SAFE_INTEGER
-    };
-  }
-
   const grant = await verifyOAuthValue<OAuthTokenGrant>(
     c.env.API_TOKEN,
     "kb_at_",
@@ -711,33 +701,6 @@ app.post("/oauth/register", async (c) => {
   );
 });
 
-// OpenAI Plugin manifest
-app.get("/.well-known/ai-plugin.json", (c) => {
-  const origin = new URL(c.req.url).origin;
-  return c.json({
-    schema_version: "v1",
-    name_for_human: "Cloudflare Knowledge Base",
-    name_for_model: "knowbase",
-    description_for_human: "Semantic search over your personal notes, documents, and web content.",
-    description_for_model:
-      "Plugin for semantically searching and retrieving personal notes, obsidian documents, code repositories, and articles stored in Cloudflare Vectorize.",
-    auth: {
-      type: "oauth",
-      client_url: `${origin}/oauth/authorize`,
-      scope: "read",
-      authorization_url: `${origin}/oauth/token`,
-      authorization_content_type: "application/json"
-    },
-    api: {
-      type: "openapi",
-      url: "/openapi.json"
-    },
-    logo_url: `${origin}/favicon.svg`,
-    contact_email: "tenfy@tenfy.cn",
-    legal_info_url: origin
-  });
-});
-
 // OpenAPI 3.1.0 Specification
 app.get("/openapi.json", (c) => {
   const origin = new URL(c.req.url).origin;
@@ -1112,9 +1075,6 @@ app.get("/oauth/verify", async (c) => {
   const grant = await getOAuthTokenGrant(c);
   if (!grant) {
     return c.json({ error: "Unauthorized" }, 401);
-  }
-  if (grant.clientId === "api-token") {
-    return c.json({ valid: true, scope: "read" });
   }
   return c.json({
     valid: true,

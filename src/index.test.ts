@@ -84,6 +84,41 @@ describe("Search & Indexing API Worker", () => {
     }
   };
 
+  async function issueOAuthAccessToken(): Promise<string> {
+    const redirectUri = "https://chatgpt.com/aip/callback";
+    const authRes = await app.request(
+      `/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=${encodeURIComponent(redirectUri)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token: mockEnv.API_TOKEN }).toString()
+      },
+      mockEnv
+    );
+    expect(authRes.status).toBe(302);
+    const code = new URL(authRes.headers.get("Location") || "").searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const tokenRes = await app.request(
+      "/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri
+        })
+      },
+      mockEnv
+    );
+    expect(tokenRes.status).toBe(200);
+    const tokenJson = (await tokenRes.json()) as { access_token: string };
+    return tokenJson.access_token;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     kvStore.clear();
@@ -268,19 +303,9 @@ describe("Search & Indexing API Worker", () => {
     expect(kvStore.has("sync_state:obsidian")).toBe(false);
   });
 
-  it("should serve OpenAI plugin manifest at GET /.well-known/ai-plugin.json", async () => {
+  it("should not serve the legacy OpenAI plugin manifest", async () => {
     const res = await app.request("/.well-known/ai-plugin.json", {}, mockEnv);
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as {
-      schema_version: string;
-      name_for_model: string;
-      auth: { type: string };
-      api: { url: string };
-    };
-    expect(json.schema_version).toBe("v1");
-    expect(json.name_for_model).toBe("knowbase");
-    expect(json.auth.type).toBe("oauth");
-    expect(json.api.url).toBe("/openapi.json");
+    expect(res.status).toBe(404);
   });
 
   it("should serve OpenAPI 3.1 schema at GET /openapi.json", async () => {
@@ -756,17 +781,56 @@ describe("Search & Indexing API Worker", () => {
     expect(tokenJson.token_type).toBe("Bearer");
   });
 
-  it("should verify token via GET /oauth/verify", async () => {
-    const res = await app.request(
+  it("should reject the deployment API token on OAuth-protected endpoints", async () => {
+    const verifyRes = await app.request(
       "/oauth/verify",
       {
         headers: { Authorization: "Bearer valid_secret_token_123" }
       },
       mockEnv
     );
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(json).toEqual({ valid: true, scope: "read" });
+    expect(verifyRes.status).toBe(401);
+
+    const searchRes = await app.request(
+      "/search",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer valid_secret_token_123"
+        },
+        body: JSON.stringify({ query: "test" })
+      },
+      mockEnv
+    );
+    expect(searchRes.status).toBe(401);
+
+    const mcpRes = await app.request(
+      "https://knowbase-api.tenfy.cn/mcp",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer valid_secret_token_123"
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "search_knowledge_base",
+            arguments: { query: "test" }
+          }
+        })
+      },
+      mockEnv
+    );
+    expect(mcpRes.status).toBe(200);
+    expect(await mcpRes.json()).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({ isError: true })
+      })
+    );
   });
 
   it("should reject unauthorized requests to protected endpoints", async () => {
@@ -793,13 +857,14 @@ describe("Search & Indexing API Worker", () => {
   });
 
   it("should execute embedding and query Vectorize for valid search", async () => {
+    const accessToken = await issueOAuthAccessToken();
     const res = await app.request(
       "/search",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer valid_secret_token_123"
+          Authorization: `Bearer ${accessToken}`
         },
         body: JSON.stringify({
           query: "how does architecture work?",

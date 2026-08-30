@@ -10,7 +10,7 @@ Cloudflare Worker providing a secure, unified semantic search and vector managem
 - **Remote MCP Server**: Stateless Streamable HTTP-compatible MCP endpoint at `/mcp` for ChatGPT Web plugins.
 - **MCP OAuth 2.1**: Protected-resource and authorization-server discovery, dynamic client registration, PKCE S256, short-lived access tokens, and refresh tokens.
 - **OpenAPI 3.1 Compatibility**: Keeps the Custom GPT Action integration available for existing clients.
-- **Scoped Bearer Authentication**: The deployment `API_TOKEN` protects administrative endpoints, while OAuth tokens can only search the knowledge base.
+- **Scoped Bearer Authentication**: The deployment `API_TOKEN` protects administrative endpoints and approves OAuth grants, while search and MCP endpoints accept only OAuth-issued access tokens.
 
 ## Endpoints
 
@@ -18,7 +18,7 @@ Cloudflare Worker providing a secure, unified semantic search and vector managem
 Stateless remote MCP endpoint exposing the authenticated `search_knowledge_base` tool.
 
 ### 2. `POST /search`
-Semantic search endpoint.
+Semantic search endpoint. Requires an OAuth-issued bearer access token; the deployment `API_TOKEN` is rejected.
 
 - **Request Body**:
 ```json
@@ -69,7 +69,7 @@ Get or save incremental synchronization state for a source.
 - `GET|POST /oauth/authorize`
 - `POST /oauth/token`
 
-The authorization page asks the user for the deployment `API_TOKEN`, validates it, and then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. Each successful refresh rotates the refresh token and starts a new 30-day validity window. The original `API_TOKEN` is never returned to the MCP client, and rotating it revokes all previously issued OAuth credentials.
+The authorization page asks the user for the deployment `API_TOKEN` only to approve the OAuth grant, then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. Each successful refresh rotates the refresh token and starts a new 30-day validity window. The original `API_TOKEN` is never returned to the MCP client and cannot be used directly against `/search`, `/mcp`, or `/oauth/verify`. Rotating it revokes all previously issued OAuth credentials.
 
 Dynamic client registration accepts HTTPS callbacks and native-client loopback callbacks on `http://127.0.0.1` or `http://[::1]`. Loopback callback ports may vary between registration and authorization, which supports the ephemeral local listener used by Codex.
 
