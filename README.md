@@ -29,6 +29,10 @@ Semantic search endpoint. Requires an OAuth-issued bearer access token; the depl
 }
 ```
 
+`topK` accepts values from 1 to 50. Source-scoped searches may over-fetch
+candidates before applying the exact source match, but the Vectorize query is
+capped at 50 when returning full metadata.
+
 ### 3. `POST /vectors/upsert`
 Generate embeddings and upsert document text chunks into Vectorize.
 
