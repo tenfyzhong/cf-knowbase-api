@@ -735,12 +735,43 @@ describe("Search & Indexing API Worker", () => {
     );
   });
 
-  it("should expose a stateless MCP search tool and trigger OAuth when unauthenticated", async () => {
+  it("should challenge unauthenticated MCP connections before initialization", async () => {
     const initializeRes = await app.request(
       "https://knowbase-api.tenfy.cn/mcp",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "test-client", version: "1.0.0" }
+          }
+        })
+      },
+      mockEnv
+    );
+
+    expect(initializeRes.status).toBe(401);
+    expect(initializeRes.headers.get("WWW-Authenticate")).toContain(
+      'resource_metadata="https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource"'
+    );
+  });
+
+  it("should expose a stateless MCP search tool to authenticated clients", async () => {
+    const accessToken = await issueOAuthAccessToken();
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`
+    };
+    const initializeRes = await app.request(
+      "/mcp",
+      {
+        method: "POST",
+        headers,
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
@@ -767,10 +798,10 @@ describe("Search & Indexing API Worker", () => {
     );
 
     const toolsRes = await app.request(
-      "https://knowbase-api.tenfy.cn/mcp",
+      "/mcp",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: 2,
@@ -792,10 +823,10 @@ describe("Search & Indexing API Worker", () => {
     );
 
     const callRes = await app.request(
-      "https://knowbase-api.tenfy.cn/mcp",
+      "/mcp",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: 3,
@@ -812,13 +843,9 @@ describe("Search & Indexing API Worker", () => {
     const callJson = (await callRes.json()) as {
       result: {
         isError: boolean;
-        _meta: Record<string, string[]>;
       };
     };
-    expect(callJson.result.isError).toBe(true);
-    expect(callJson.result._meta["mcp/www_authenticate"][0]).toContain(
-      'resource_metadata="https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource"'
-    );
+    expect(callJson.result.isError).toBe(false);
   });
 
   it("should handle OAuth authorization code flow", async () => {
@@ -910,11 +937,9 @@ describe("Search & Indexing API Worker", () => {
       },
       mockEnv
     );
-    expect(mcpRes.status).toBe(200);
-    expect(await mcpRes.json()).toEqual(
-      expect.objectContaining({
-        result: expect.objectContaining({ isError: true })
-      })
+    expect(mcpRes.status).toBe(401);
+    expect(mcpRes.headers.get("WWW-Authenticate")).toContain(
+      'resource_metadata="https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource"'
     );
   });
 
