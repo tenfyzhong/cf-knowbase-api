@@ -51,15 +51,15 @@ GitHub Actions runs the test suite and TypeScript type checking for every pull r
 
 ## Production Releases
 
-Pushing a version tag matching `v*` runs the GitHub Actions deployment workflow. The workflow installs locked dependencies, runs tests and type checking, and then deploys the Worker configured in `wrangler.toml`.
+Pushing a version tag that starts with a digit runs the GitHub Actions deployment workflow. The workflow installs locked dependencies, runs tests and type checking, and then deploys the Worker configured in `wrangler.toml`.
 
 Before creating a release tag, configure the `CLOUDFLARE_API_TOKEN` GitHub Actions repository secret. Create the token from Cloudflare's **Edit Cloudflare Workers** template and restrict it to the account configured by the deployment workflow.
 
 After the release commit is on `main`, create and push a signed release tag:
 
 ```bash
-git tag -s v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
+git tag -s 0.2.0 -m "Release 0.2.0"
+git push origin 0.2.0
 ```
 
 The deployment is recorded in the GitHub `production` environment and uses the Worker name and routes defined in `wrangler.toml`.
