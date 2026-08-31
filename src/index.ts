@@ -1232,6 +1232,22 @@ function oauthChallenge(origin: string, description: string): string {
 }
 
 app.post("/mcp", async (c) => {
+  const origin = new URL(c.req.url).origin;
+  const grant = await getOAuthTokenGrant(c, `${origin}/mcp`);
+  if (!grant) {
+    c.header(
+      "WWW-Authenticate",
+      oauthChallenge(origin, "Connect Knowbase to search private data")
+    );
+    return c.json(
+      {
+        error: "unauthorized",
+        error_description: "A valid OAuth access token is required"
+      },
+      401
+    );
+  }
+
   let message: {
     jsonrpc?: string;
     id?: string | number | null;
@@ -1299,29 +1315,6 @@ app.post("/mcp", async (c) => {
         jsonrpc: "2.0",
         id,
         error: { code: -32602, message: "Unknown tool" }
-      });
-    }
-
-    const origin = new URL(c.req.url).origin;
-    const grant = await getOAuthTokenGrant(c, `${origin}/mcp`);
-    if (!grant) {
-      return c.json({
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [
-            {
-              type: "text",
-              text: "Authentication required: connect Knowbase to continue."
-            }
-          ],
-          _meta: {
-            "mcp/www_authenticate": [
-              oauthChallenge(origin, "Connect Knowbase to search private data")
-            ]
-          },
-          isError: true
-        }
       });
     }
 

@@ -15,7 +15,7 @@ Cloudflare Worker providing a secure, unified semantic search and vector managem
 ## Endpoints
 
 ### 1. `POST /mcp`
-Stateless remote MCP endpoint exposing the authenticated `search_knowledge_base` tool.
+Stateless remote MCP endpoint exposing the authenticated `search_knowledge_base` tool. Every request, including MCP initialization, requires an OAuth-issued bearer access token; unauthenticated requests receive an HTTP 401 OAuth challenge.
 
 ### 2. `POST /search`
 Semantic search endpoint. Requires an OAuth-issued bearer access token; the deployment `API_TOKEN` is rejected.
@@ -154,6 +154,8 @@ Reload the configuration, authenticate, and test the server from an OMP session:
 /mcp reauth knowbase
 /mcp test knowbase
 ```
+
+Knowbase challenges the initial anonymous MCP connection with HTTP 401, allowing OMP to discover the OAuth endpoints during `/mcp reauth`.
 
 ### Pi
 
