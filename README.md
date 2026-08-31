@@ -58,10 +58,20 @@ Delete vectors by ID list.
 }
 ```
 
-### 5. `GET /sync-state/:source` & `PUT /sync-state/:source`
+### 5. `POST /vectors/clear`
+
+Delete indexed vectors and synchronization state. Omit `source` to clear every source, or provide an exact source name to clear only that source:
+
+```text
+POST /vectors/clear?source=personal-notes
+```
+
+This administrative endpoint requires the deployment `API_TOKEN`.
+
+### 6. `GET /sync-state/:source` & `PUT /sync-state/:source`
 Get or save incremental synchronization state for a source.
 
-### 6. OAuth discovery and authorization
+### 7. OAuth discovery and authorization
 
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
@@ -71,20 +81,20 @@ Get or save incremental synchronization state for a source.
 
 The authorization page asks the user for the deployment `API_TOKEN` only to approve the OAuth grant, then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. Each successful refresh rotates the refresh token and starts a new 30-day validity window. The original `API_TOKEN` is never returned to the MCP client and cannot be used directly against `/search`, `/mcp`, or `/oauth/verify`. Rotating it revokes all previously issued OAuth credentials.
 
-Dynamic client registration accepts HTTPS callbacks and native-client loopback callbacks on `http://127.0.0.1` or `http://[::1]`. Loopback callback ports may vary between registration and authorization, which supports the ephemeral local listener used by Codex.
+Dynamic client registration accepts HTTPS callbacks and native-client loopback callbacks on `http://localhost`, `http://127.0.0.1`, or `http://[::1]`. Loopback callback ports may vary between registration and authorization, which supports ephemeral local listeners used by command-line MCP clients.
 
-### 7. `GET /health`
+### 8. `GET /health`
 Healthcheck endpoint.
 
 ---
 
-## Connecting as a ChatGPT Web Plugin
+## Connecting from ChatGPT Web
 
 1. Deploy the Worker on a public HTTPS domain.
 2. Enable **Developer mode** under **ChatGPT Settings > Security and login**.
 3. Open **ChatGPT Plugins**, add an MCP server, and enter:
    ```text
-   https://knowbase-api.tenfy.cn/mcp
+   https://knowbase.example.com/mcp
    ```
 4. Review the discovered `search_knowledge_base` tool.
 5. Click **Connect**, or call the tool for the first time.
@@ -92,7 +102,11 @@ Healthcheck endpoint.
 
 ChatGPT discovers OAuth through the two `.well-known` endpoints, dynamically registers a public client, performs authorization code + PKCE, and stores only the issued OAuth tokens.
 
-## Connecting from Codex to the Remote MCP Server
+## Connecting MCP Clients Directly
+
+The remote endpoint can be used without installing a Knowbase plugin. Configure the deployment URL in each MCP client and complete its OAuth flow. Do not put the deployment `API_TOKEN` in MCP configuration or send it as a bearer token: enter it only on the Knowbase authorization page. The client stores the issued OAuth access and refresh tokens.
+
+### Codex
 
 Add the MCP URL for the deployment, then authenticate it:
 
@@ -103,60 +117,69 @@ codex mcp login knowbase
 
 Codex dynamically registers a public OAuth client and opens the Knowbase authorization page. Enter the deployment `API_TOKEN` there. Codex receives only the issued OAuth access and refresh tokens; its local loopback callback can use an ephemeral port.
 
----
+### Claude Code
 
-## Legacy Custom GPT Action Setup
+Add the remote HTTP MCP server at user scope, authenticate it, and verify the connection:
 
-You can connect your knowledge base to **ChatGPT Web** and the **ChatGPT Mobile App (iOS / Android)** using a Custom GPT Action with OAuth 2.0 authentication. Configuring it once on Web will automatically sync and enable it on your mobile devices.
+```bash
+claude mcp add --transport http --scope user \
+  knowbase https://your-knowbase.example.com/mcp
+claude mcp login knowbase
+claude mcp get knowbase
+```
 
-### Step 1: Create a Custom GPT on Web
-1. Open [chatgpt.com](https://chatgpt.com) on your computer.
-2. Click **Explore GPTs** in the sidebar, then click **+ Create**.
-3. Go to the **Configure** tab and fill in basic details:
-   - **Name**: `Personal Knowledge Base`
-   - **Description**: `Semantic search assistant for notes and technical documents`
-   - **Instructions** (Recommended Prompt):
-     ```text
-     You are my personal knowledge base assistant. When answering technical questions, researching past projects, or retrieving documentation, call the searchKnowledgeBase tool to look up context.
-     Synthesize answers clearly based on retrieved content and cite document titles or paths when relevant.
-     ```
+### Oh My Pi
 
-### Step 2: Add Knowledge Base Action
-1. Scroll down to the **Actions** section and click **Create new action**.
-2. Above the **Schema** box, click **Import from URL** and enter:
-   ```text
-   https://knowbase-api.tenfy.cn/openapi.json
-   ```
-3. Click **Import**. ChatGPT will parse the `searchKnowledgeBase` action.
+Add the following user-level configuration to `~/.omp/agent/mcp.json`:
 
-### Step 3: Configure OAuth 2.0 Authentication
-1. Click the gear icon under **Authentication**:
-   - **Auth Type**: `OAuth`
-   - **Client ID**: `chatgpt`
-   - **Client Secret**: any string (e.g. `secret123`)
-   - **Authorization URL**:
-     ```text
-     https://knowbase-api.tenfy.cn/oauth/authorize
-     ```
-   - **Token URL**:
-     ```text
-     https://knowbase-api.tenfy.cn/oauth/token
-     ```
-   - **Scope**: `read`
-   - **Token Exchange Method**: `Default (POST request)`
-2. Click **Save**.
+```json
+{
+  "mcpServers": {
+    "knowbase": {
+      "type": "http",
+      "url": "https://your-knowbase.example.com/mcp"
+    }
+  }
+}
+```
 
-### Step 4: Authorize and Save
-1. In the Action preview area or Action list, click **Connect**.
-2. An authorization page will open. Enter your `API_TOKEN` and click **Authorize & Connect**.
-3. Once authorized, return to the GPT editor and click **Save / Update** in the top right:
-   - **Publish to**: Select **`Only me`** to ensure your knowledge base remains strictly private.
+Reload the configuration, authenticate, and test the server from an OMP session:
 
-### Step 5: Use on Mobile App (iOS / Android)
-1. Open the **ChatGPT App** on your phone (logged into the same account).
-2. Open the sidebar and select your **`Personal Knowledge Base`** GPT.
-3. Ask questions directly from your phone (e.g., *"Search notes for architecture designs"*).
-4. Tap **Allow** on the first Action invocation.
+```text
+/mcp reload
+/mcp reauth knowbase
+/mcp test knowbase
+```
+
+### Pi
+
+Pi does not include a native MCP client. Install the general-purpose MCP adapter instead of the Knowbase plugin:
+
+```bash
+pi install npm:pi-mcp-adapter
+```
+
+Add the following user-level configuration to `~/.config/mcp/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "knowbase": {
+      "url": "https://your-knowbase.example.com/mcp",
+      "auth": "oauth"
+    }
+  }
+}
+```
+
+Restart Pi, then authenticate and connect:
+
+```text
+/mcp-auth knowbase
+/mcp reconnect knowbase
+```
+
+Each successful refresh rotates the refresh token and starts a new 30-day validity window, so normal inactivity does not require reconnecting. Authenticate again only if the refresh token expires or is revoked, the deployment `API_TOKEN` is rotated, or the client's stored credential is removed.
 
 ---
 
@@ -181,23 +204,7 @@ npx wrangler secret put API_TOKEN
 pnpm run deploy
 ```
 
-## Local Development & Testing
-
-```bash
-# Install dependencies
-pnpm install
-
-# Run unit tests
-pnpm test
-
-# Run type checking
-pnpm run typecheck
-
-# Start local worker dev server
-pnpm run dev
-```
-
-GitHub Actions runs the test suite and TypeScript type checking for every pull request and every push to `main`.
+For local development, testing, contribution guidelines, and the release process, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
