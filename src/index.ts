@@ -69,9 +69,11 @@ export const DeleteRequestSchema = z.object({
   ids: z.array(z.string().min(1))
 });
 
+const VECTORIZE_METADATA_TOP_K_LIMIT = 50;
+
 export const SearchRequestSchema = z.object({
   query: z.string().trim().min(1),
-  topK: z.number().int().min(1).max(50).default(5),
+  topK: z.number().int().min(1).max(VECTORIZE_METADATA_TOP_K_LIMIT).default(5),
   source: z.string().optional()
 });
 
@@ -743,7 +745,12 @@ app.get("/openapi.json", (c) => {
                   type: "object",
                   properties: {
                     query: { type: "string" },
-                    topK: { type: "integer", default: 5 },
+                    topK: {
+                      type: "integer",
+                      minimum: 1,
+                      maximum: VECTORIZE_METADATA_TOP_K_LIMIT,
+                      default: 5
+                    },
                     source: { type: "string" }
                   },
                   required: ["query"]
@@ -1111,7 +1118,10 @@ async function searchKnowledgeBase(
     throw new Error("Failed to generate query embedding");
   }
 
-  const fetchLimit = source ? Math.max(topK * 4, 30) : topK;
+  const fetchLimit = Math.min(
+    source ? Math.max(topK * 4, 30) : topK,
+    VECTORIZE_METADATA_TOP_K_LIMIT
+  );
   const searchMatches = await env.VECTORIZE.query(queryVector, {
     topK: fetchLimit,
     returnMetadata: "all"
@@ -1184,7 +1194,7 @@ const SEARCH_TOOL = {
       topK: {
         type: "integer",
         minimum: 1,
-        maximum: 50,
+        maximum: VECTORIZE_METADATA_TOP_K_LIMIT,
         default: 5,
         description: "Maximum number of results"
       },

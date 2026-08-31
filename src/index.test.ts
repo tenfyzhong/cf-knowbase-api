@@ -981,4 +981,33 @@ describe("Search & Indexing API Worker", () => {
     expect(json.results).toHaveLength(1);
     expect(json.results[0].source).toBe("obsidian");
   });
+
+  it("should cap source-filtered Vectorize queries at the metadata limit", async () => {
+    const accessToken = await issueOAuthAccessToken();
+    const res = await app.request(
+      "/search",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          query: "how does architecture work?",
+          topK: 20,
+          source: "obsidian"
+        })
+      },
+      mockEnv
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockEnv.VECTORIZE.query).toHaveBeenCalledWith(
+      [0.11, 0.22, 0.33],
+      expect.objectContaining({
+        topK: 50,
+        returnMetadata: "all"
+      })
+    );
+  });
 });
