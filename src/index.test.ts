@@ -630,6 +630,49 @@ describe("Search & Indexing API Worker", () => {
     expect(tokenRes.status).toBe(200);
   });
 
+  it("should accept localhost OAuth redirects with dynamic ports", async () => {
+    const registeredRedirect = "http://localhost/callback";
+    const activeRedirect = "http://localhost:3000/callback";
+    const registerRes = await app.request(
+      "https://knowbase-api.tenfy.cn/oauth/register",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redirect_uris: [registeredRedirect],
+          token_endpoint_auth_method: "none"
+        })
+      },
+      mockEnv
+    );
+
+    expect(registerRes.status).toBe(201);
+    const registered = (await registerRes.json()) as { client_id: string };
+    const authorizeUrl = new URL(
+      "https://knowbase-api.tenfy.cn/oauth/authorize"
+    );
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", registered.client_id);
+    authorizeUrl.searchParams.set("redirect_uri", activeRedirect);
+    authorizeUrl.searchParams.set("scope", "search:read");
+    authorizeUrl.searchParams.set(
+      "resource",
+      "https://knowbase-api.tenfy.cn/mcp"
+    );
+    authorizeUrl.searchParams.set(
+      "code_challenge",
+      "pkce-challenge-with-at-least-forty-three-characters"
+    );
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeRes = await app.request(
+      authorizeUrl.toString(),
+      undefined,
+      mockEnv
+    );
+    expect(authorizeRes.status).toBe(200);
+  });
+
   it("should reject non-loopback HTTP OAuth redirects", async () => {
     const registerRes = await app.request(
       "https://knowbase-api.tenfy.cn/oauth/register",

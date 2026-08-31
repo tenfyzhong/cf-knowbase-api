@@ -165,7 +165,8 @@ function parseOAuthRedirectUri(value: string): URL | null {
 function isLoopbackRedirectUri(redirectUri: URL): boolean {
   return (
     redirectUri.protocol === "http:" &&
-    (redirectUri.hostname === "127.0.0.1" ||
+    (redirectUri.hostname === "localhost" ||
+      redirectUri.hostname === "127.0.0.1" ||
       redirectUri.hostname === "[::1]")
   );
 }
