@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bookGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="pageGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bookGrad)"/>
+  <path d="M 32 46 C 26 42 16 42 14 43 L 14 20 C 18 19 26 19 32 23 Z" fill="url(#pageGrad)" opacity="0.95"/>
+  <path d="M 32 46 C 38 42 48 42 50 43 L 50 20 C 46 19 38 19 32 23 Z" fill="url(#pageGrad)" opacity="0.95"/>
+  <path d="M 32 23 L 32 46" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 18 26 C 22 25 26 25 28 27 M 18 31 C 22 30 26 30 28 32 M 18 36 C 22 35 26 35 28 37" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M 36 27 C 38 25 42 25 46 26 M 36 32 C 38 30 42 30 46 31 M 36 37 C 38 35 42 35 46 36" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+</svg>
