@@ -205,3 +205,7 @@ pnpm run deploy
 ```
 
 For local development, testing, contribution guidelines, and the release process, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
