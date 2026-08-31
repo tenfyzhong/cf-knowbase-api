@@ -198,3 +198,7 @@ pnpm run dev
 ```
 
 GitHub Actions runs the test suite and TypeScript type checking for every pull request and every push to `main`.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

@@ -2,6 +2,7 @@
   "name": "cf-knowbase-api",
   "version": "0.2.0",
   "description": "Cloudflare Worker Knowledge Base Search & Vector Management API",
+  "license": "MIT",
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
