@@ -557,17 +557,32 @@ app.post("/vectors/clear", async (c) => {
   }
 
   try {
-    const listRes = await c.env.KV.list({ prefix: "sync_state:" });
-    const keys = (listRes.keys || []).map((k) => k.name);
+    const sourceParam = c.req.query("source");
+    const source = sourceParam?.trim();
+    if (sourceParam !== undefined && !source) {
+      return c.json({ error: "Bad Request: source must not be empty" }, 400);
+    }
+
+    let keys: string[];
+    if (source) {
+      keys = [`sync_state:${encodeURIComponent(source)}`];
+    } else {
+      const listRes = await c.env.KV.list({ prefix: "sync_state:" });
+      keys = (listRes.keys || []).map((k) => k.name);
+    }
 
     let totalDeleted = 0;
     const clearedSources: string[] = [];
 
     for (const key of keys) {
+      const raw = await c.env.KV.get(key);
+      if (raw === null) {
+        continue;
+      }
+
       const sourceName = decodeURIComponent(key.slice("sync_state:".length));
       clearedSources.push(sourceName);
 
-      const raw = await c.env.KV.get(key);
       if (raw) {
         try {
           const data = JSON.parse(raw) as { files?: Record<string, { chunkCount?: number }> };

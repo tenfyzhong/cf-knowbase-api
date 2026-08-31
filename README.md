@@ -58,10 +58,20 @@ Delete vectors by ID list.
 }
 ```
 
-### 5. `GET /sync-state/:source` & `PUT /sync-state/:source`
+### 5. `POST /vectors/clear`
+
+Delete indexed vectors and synchronization state. Omit `source` to clear every source, or provide an exact source name to clear only that source:
+
+```text
+POST /vectors/clear?source=personal-notes
+```
+
+This administrative endpoint requires the deployment `API_TOKEN`.
+
+### 6. `GET /sync-state/:source` & `PUT /sync-state/:source`
 Get or save incremental synchronization state for a source.
 
-### 6. OAuth discovery and authorization
+### 7. OAuth discovery and authorization
 
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
@@ -73,7 +83,7 @@ The authorization page asks the user for the deployment `API_TOKEN` only to appr
 
 Dynamic client registration accepts HTTPS callbacks and native-client loopback callbacks on `http://localhost`, `http://127.0.0.1`, or `http://[::1]`. Loopback callback ports may vary between registration and authorization, which supports ephemeral local listeners used by command-line MCP clients.
 
-### 7. `GET /health`
+### 8. `GET /health`
 Healthcheck endpoint.
 
 ---

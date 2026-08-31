@@ -303,6 +303,48 @@ describe("Search & Indexing API Worker", () => {
     expect(kvStore.has("sync_state:obsidian")).toBe(false);
   });
 
+  it("should clear vectors and sync state for only the requested source", async () => {
+    kvStore.set(
+      "sync_state:obsidian",
+      JSON.stringify({
+        files: {
+          "doc1.md": { hash: "h1", chunkCount: 2 }
+        }
+      })
+    );
+    kvStore.set(
+      "sync_state:blog",
+      JSON.stringify({
+        files: {
+          "post1.md": { hash: "h2", chunkCount: 1 }
+        }
+      })
+    );
+
+    const res = await app.request(
+      "/vectors/clear?source=obsidian",
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer valid_secret_token_123"
+        }
+      },
+      mockEnv
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      success: boolean;
+      deletedVectorsCount: number;
+      clearedSources: string[];
+    };
+    expect(json.success).toBe(true);
+    expect(json.deletedVectorsCount).toBe(2);
+    expect(json.clearedSources).toEqual(["obsidian"]);
+    expect(kvStore.has("sync_state:obsidian")).toBe(false);
+    expect(kvStore.has("sync_state:blog")).toBe(true);
+  });
+
   it("should not serve the legacy OpenAI plugin manifest", async () => {
     const res = await app.request("/.well-known/ai-plugin.json", {}, mockEnv);
     expect(res.status).toBe(404);
