@@ -20,8 +20,6 @@ id = "your-kv-namespace-id"
 [vars]
 AI_MODEL = "@cf/baai/bge-m3"
 
-# Configure these for your Access application protecting /oauth/authorize.
-# OAuth authorization fails closed until all three values are configured.
-ACCESS_TEAM_DOMAIN = ""
-ACCESS_AUD = ""
-ACCESS_EMAIL_DOMAIN = ""
+# GitHub Actions binds ACCESS_TEAM_DOMAIN, ACCESS_AUD and ACCESS_EMAIL_DOMAIN
+# as Worker secrets from Actions Variables or Secrets. Do not add empty vars
+# with those names here. For manual deployment, set them with wrangler secret put.

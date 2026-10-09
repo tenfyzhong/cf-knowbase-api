@@ -19,6 +19,10 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
+    env:
+      ACCESS_TEAM_DOMAIN: ${{ secrets.ACCESS_TEAM_DOMAIN || vars.ACCESS_TEAM_DOMAIN }}
+      ACCESS_AUD: ${{ secrets.ACCESS_AUD || vars.ACCESS_AUD }}
+      ACCESS_EMAIL_DOMAIN: ${{ secrets.ACCESS_EMAIL_DOMAIN || vars.ACCESS_EMAIL_DOMAIN }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -43,6 +47,16 @@ jobs:
       - name: Run type check
         run: pnpm run typecheck
 
+      - name: Validate Access deployment configuration
+        run: |
+          for name in ACCESS_TEAM_DOMAIN ACCESS_AUD ACCESS_EMAIL_DOMAIN; do
+            value="${!name}"
+            if [[ -z "${value//[[:space:]]/}" ]]; then
+              echo "::error::Configure $name in GitHub Actions Variables or Secrets."
+              exit 1
+            fi
+          done
+
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
@@ -51,3 +65,7 @@ jobs:
           command: deploy
           packageManager: pnpm
           wranglerVersion: "4.127.1"
+          secrets: |
+            ACCESS_TEAM_DOMAIN
+            ACCESS_AUD
+            ACCESS_EMAIL_DOMAIN

@@ -213,15 +213,27 @@ Each deployment must configure its own Access application, team domain, applicat
 1. Open **Cloudflare Zero Trust** for the same account. If necessary, set up the organization and choose a team name. The **team domain** is its login hostname, such as `your-team.cloudflareaccess.com`; it is separate from the Worker domain `knowbase.example.com`.
 2. In **Access → Applications**, create a **Self-hosted** application for `knowbase.example.com` with the path `/oauth/authorize`. Protect this path only: OAuth discovery, `/oauth/register`, `/oauth/token`, and `/mcp` must remain reachable by MCP clients without an Access browser session.
 3. Add an **Allow** policy with **Include → Emails ending in → your allowed email domain** (for example, `example.com`). Use an identity provider or enable **One-time PIN** to verify ownership of the email address. Do not add an Everyone, Bypass, or service-token policy to this application.
-4. Copy the application's **Application Audience (AUD) tag**, your team domain and your allowed email domain into the Worker variables in `wrangler.toml`:
+4. Copy the application's **Application Audience (AUD) tag** and your team domain. Configure all three values using one of the deployment methods below.
 
-```toml
-[vars]
-AI_MODEL = "@cf/baai/bge-m3"
-ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
-ACCESS_AUD = "your-application-audience-tag"
-ACCESS_EMAIL_DOMAIN = "example.com"
+For **GitHub Actions deployment**, open **Settings → Secrets and variables → Actions** in your repository and add these names under **Variables** or **Secrets**:
+
+| Name | Value |
+| --- | --- |
+| `ACCESS_TEAM_DOMAIN` | Your team hostname, such as `your-team.cloudflareaccess.com`, without `https://` or a trailing slash |
+| `ACCESS_AUD` | Your Access application's Application Audience (AUD) tag |
+| `ACCESS_EMAIL_DOMAIN` | Your allowed email domain, such as `example.com`, without `@` |
+
+The workflow also supports these names in the GitHub **production** Environment. For each name, a non-empty Secret takes precedence over a Variable. Deployment validates that all three values are present, then binds them to the Worker as secrets through Wrangler Action. You do not need to put their values in `wrangler.toml` or commit them to the repository. Missing or whitespace-only values stop the workflow before deployment. The existing version-tag trigger remains unchanged.
+
+For **manual deployment**, store the same values as Worker secrets:
+
+```bash
+pnpm exec wrangler secret put ACCESS_TEAM_DOMAIN
+pnpm exec wrangler secret put ACCESS_AUD
+pnpm exec wrangler secret put ACCESS_EMAIL_DOMAIN
 ```
+
+Enter each value when prompted, then run `pnpm run deploy`. Avoid defining the same names as plaintext variables in `wrangler.toml`, which would conflict with secret bindings.
 
 The Worker validates the Access JWT signature using the team's public keys, checks the issuer, audience, expiration and application-token identity, and independently enforces the exact domain in `ACCESS_EMAIL_DOMAIN` (case-insensitive; subdomains are not implicitly allowed). Use the same email domain in the Access policy and Worker variable, without a leading `@`. Missing or invalid configuration fails closed with HTTP 503; missing or invalid JWTs receive HTTP 401 and other email domains receive HTTP 403. Direct requests to a Worker URL cannot authorize a connection using a password or a forged email header. See [Cloudflare's JWT validation documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
 

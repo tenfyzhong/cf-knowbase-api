@@ -53,7 +53,7 @@ GitHub Actions runs the test suite and TypeScript type checking for every pull r
 
 Pushing a version tag that starts with a digit runs the GitHub Actions deployment workflow. The workflow installs locked dependencies, runs tests and type checking, and then deploys the Worker configured in `wrangler.toml`.
 
-Before creating a release tag, configure the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` GitHub Actions repository secrets, and fill in your deployment's KV namespace and Access variables in `wrangler.toml` as described in the README. Create the token from Cloudflare's **Edit Cloudflare Workers** template and restrict it to your deployment account.
+Before creating a release tag, configure the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` GitHub Actions repository secrets, fill in your deployment's KV namespace in `wrangler.toml`, and configure `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ACCESS_EMAIL_DOMAIN` through GitHub Actions Variables or Secrets as described in the README. Create the token from Cloudflare's **Edit Cloudflare Workers** template and restrict it to your deployment account.
 
 After the release commit is on `main`, create and push a signed release tag:
 
