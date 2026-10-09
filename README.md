@@ -102,13 +102,13 @@ Healthcheck endpoint.
    ```
 4. Review the discovered `search_knowledge_base` tool.
 5. Click **Connect**, or call the tool for the first time.
-6. Enter the deployment `API_TOKEN` on the Knowbase authorization page.
+6. Sign in through Cloudflare Access with an email from the deployment's allowed domain, then confirm the connection on the Knowbase authorization page.
 
 ChatGPT discovers OAuth through the two `.well-known` endpoints, dynamically registers a public client, performs authorization code + PKCE, and stores only the issued OAuth tokens.
 
 ## Connecting MCP Clients Directly
 
-The remote endpoint can be used without installing a Knowbase plugin. Configure the deployment URL in each MCP client and complete its OAuth flow. Do not put the deployment `API_TOKEN` in MCP configuration or send it as a bearer token: sign in through Cloudflare Access on the Knowbase authorization page. The client stores the issued OAuth access and refresh tokens.
+The remote endpoint can be used without installing a Knowbase plugin. Configure the deployment URL in each MCP client, sign in through Cloudflare Access, and confirm the connection on the Knowbase authorization page. The client stores the issued OAuth access and refresh tokens.
 
 ### Codex
 
