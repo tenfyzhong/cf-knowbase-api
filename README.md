@@ -10,7 +10,7 @@ Cloudflare Worker providing a secure, unified semantic search and vector managem
 - **Remote MCP Server**: Stateless Streamable HTTP-compatible MCP endpoint at `/mcp` for ChatGPT Web plugins.
 - **MCP OAuth 2.1**: Protected-resource and authorization-server discovery, dynamic client registration, PKCE S256, short-lived access tokens, and refresh tokens.
 - **OpenAPI 3.1 Compatibility**: Keeps the Custom GPT Action integration available for existing clients.
-- **Scoped Bearer Authentication**: The deployment `API_TOKEN` protects administrative endpoints and approves OAuth grants, while search and MCP endpoints accept only OAuth-issued access tokens.
+- **Scoped Bearer Authentication**: Cloudflare Access restricts OAuth authorization to `@tenfy.cn` identities. The deployment `API_TOKEN` protects administrative endpoints and signs OAuth credentials, while search and MCP endpoints accept only OAuth-issued access tokens.
 
 ## Endpoints
 
@@ -83,7 +83,7 @@ Get or save incremental synchronization state for a source.
 - `GET|POST /oauth/authorize`
 - `POST /oauth/token`
 
-The authorization page asks the user for the deployment `API_TOKEN` only to approve the OAuth grant, then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. Each successful refresh rotates the refresh token and starts a new 30-day validity window. The original `API_TOKEN` is never returned to the MCP client and cannot be used directly against `/search`, `/mcp`, or `/oauth/verify`. Rotating it revokes all previously issued OAuth credentials.
+Cloudflare Zero Trust (Access) authenticates the user before showing the authorization page. Only a verified Access application JWT with an `@tenfy.cn` email address can approve a connection. The page shows the signed-in email and asks for confirmation without a password, then issues an independent HMAC-signed one-hour OAuth access token plus a refresh token. Each successful refresh rotates the refresh token and starts a new 30-day validity window. The original `API_TOKEN` is never returned to the MCP client and cannot be used directly against `/search`, `/mcp`, or `/oauth/verify`. Rotating it revokes all previously issued OAuth credentials.
 
 Dynamic client registration accepts HTTPS callbacks and native-client loopback callbacks on `http://localhost`, `http://127.0.0.1`, or `http://[::1]`. Loopback callback ports may vary between registration and authorization, which supports ephemeral local listeners used by command-line MCP clients.
 
@@ -108,7 +108,7 @@ ChatGPT discovers OAuth through the two `.well-known` endpoints, dynamically reg
 
 ## Connecting MCP Clients Directly
 
-The remote endpoint can be used without installing a Knowbase plugin. Configure the deployment URL in each MCP client and complete its OAuth flow. Do not put the deployment `API_TOKEN` in MCP configuration or send it as a bearer token: enter it only on the Knowbase authorization page. The client stores the issued OAuth access and refresh tokens.
+The remote endpoint can be used without installing a Knowbase plugin. Configure the deployment URL in each MCP client and complete its OAuth flow. Do not put the deployment `API_TOKEN` in MCP configuration or send it as a bearer token: sign in through Cloudflare Access on the Knowbase authorization page. The client stores the issued OAuth access and refresh tokens.
 
 ### Codex
 
@@ -119,7 +119,7 @@ codex mcp add knowbase --url https://your-knowbase.example.com/mcp
 codex mcp login knowbase
 ```
 
-Codex dynamically registers a public OAuth client and opens the Knowbase authorization page. Enter the deployment `API_TOKEN` there. Codex receives only the issued OAuth access and refresh tokens; its local loopback callback can use an ephemeral port.
+Codex dynamically registers a public OAuth client and opens the Knowbase authorization page. Sign in through Cloudflare Access with an `@tenfy.cn` email address and confirm the connection. Codex receives only the issued OAuth access and refresh tokens; its local loopback callback can use an ephemeral port.
 
 ### Claude Code
 
@@ -204,7 +204,27 @@ npx wrangler kv namespace create knowbase-kv-namespace
 npx wrangler secret put API_TOKEN
 ```
 
-### 3. Deploy Worker
+### 3. Configure Cloudflare Zero Trust login
+
+The `tenfy.cn` deployment already has the Access application `cf-knowbase-oauth` for `knowbase-api.tenfy.cn/oauth/authorize`, using the existing `cf-lark-tenfy-email` Allow policy (`@tenfy.cn`) and One-time PIN. Its team domain and AUD are configured in `wrangler.toml`; reuse this application when deploying the Worker. The steps below describe setup for another deployment.
+
+1. Open **Cloudflare Zero Trust** for the same account. If necessary, set up the organization and choose a team name. The **team domain** is its login hostname, such as `your-team.cloudflareaccess.com`; it is separate from the Worker domain `knowbase-api.tenfy.cn`.
+2. In **Access → Applications**, create a **Self-hosted** application for `knowbase-api.tenfy.cn` with the path `/oauth/authorize`. Protect this path only: OAuth discovery, `/oauth/register`, `/oauth/token`, and `/mcp` must remain reachable by MCP clients without an Access browser session.
+3. Add an **Allow** policy with **Include → Emails ending in → `tenfy.cn`**. Use an identity provider or enable **One-time PIN** to verify ownership of the email address. Do not add an Everyone, Bypass, or service-token policy to this application.
+4. Copy the application's **Application Audience (AUD) tag** and your team domain into the Worker variables in `wrangler.toml`:
+
+```toml
+[vars]
+AI_MODEL = "@cf/baai/bge-m3"
+ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
+ACCESS_AUD = "your-application-audience-tag"
+```
+
+The Worker validates the Access JWT signature using the team's public keys, checks the issuer, audience, expiration and application-token identity, and independently enforces the exact `tenfy.cn` email domain. Missing configuration fails closed with HTTP 503; missing or invalid JWTs receive HTTP 401 and other email domains receive HTTP 403. Direct requests to a Worker URL cannot authorize a connection using a password or a forged email header. See [Cloudflare's JWT validation documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
+
+`API_TOKEN` is still required for administrative API authentication and signing OAuth credentials, but it is never entered on the authorization page. Existing issued OAuth access and refresh tokens retain their validity; rotate `API_TOKEN` if you also need to revoke previously issued credentials.
+
+### 4. Deploy Worker
 
 ```bash
 pnpm run deploy

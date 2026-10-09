@@ -21,3 +21,7 @@ id = "8892dd218f4b43259ca31b786dc3b422"
 
 [vars]
 AI_MODEL = "@cf/baai/bge-m3"
+
+# Cloudflare Access application: cf-knowbase-oauth (/oauth/authorize).
+ACCESS_TEAM_DOMAIN = "tenfy.cloudflareaccess.com"
+ACCESS_AUD = "9ecc7b29a79182ab2ce3c312d7d5e2827b6e900804832ae7335ac38bc0cfa105"

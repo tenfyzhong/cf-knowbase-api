@@ -1,8 +1,11 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
+import { accessIssuer, verifyAccessIdentity } from "./access.js";
 
 export interface Bindings {
   API_TOKEN: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
   AI_MODEL?: string;
   AI: {
     run: (model: string, input: { text: string[] }) => Promise<{
@@ -790,13 +793,6 @@ app.all("/oauth/authorize", async (c) => {
   const codeChallenge = url.searchParams.get("code_challenge") || "";
   const codeChallengeMethod =
     url.searchParams.get("code_challenge_method") || "";
-  const providedToken =
-    c.req.method === "POST"
-      ? await c.req
-          .parseBody()
-          .then((body) => body["token"] as string)
-          .catch(() => "")
-      : "";
 
   if (responseType !== "code" || !clientId || !redirectUri) {
     return c.json(
@@ -878,7 +874,75 @@ app.all("/oauth/authorize", async (c) => {
     );
   }
 
-  if (providedToken && providedToken.trim() === c.env.API_TOKEN) {
+  c.header("Cache-Control", "no-store");
+  c.header("Pragma", "no-cache");
+  c.header(
+    "Content-Security-Policy",
+    "frame-ancestors 'none'; form-action 'self'"
+  );
+  c.header("Referrer-Policy", "no-referrer");
+  if (!accessIssuer(c.env)) {
+    return c.json(
+      {
+        error: "temporarily_unavailable",
+        error_description: "Cloudflare Access is not configured"
+      },
+      503
+    );
+  }
+  const assertion = c.req.header("Cf-Access-Jwt-Assertion");
+  const identity = assertion
+    ? await verifyAccessIdentity(assertion, c.env)
+    : null;
+  if (!identity) {
+    return c.json(
+      {
+        error: "access_denied",
+        error_description: "Sign in through Cloudflare Access"
+      },
+      401
+    );
+  }
+  if (!/^[^@\s]+@tenfy\.cn$/i.test(identity.email)) {
+    return c.json(
+      {
+        error: "access_denied",
+        error_description:
+          "Only @tenfy.cn email addresses may authorize connections"
+      },
+      403
+    );
+  }
+
+  if (c.req.method === "POST") {
+    const body = await c.req
+      .parseBody()
+      .catch(() => ({}) as Record<string, unknown>);
+    const consent =
+      typeof body.consent === "string"
+        ? await verifyOAuthValue<{
+            sub: string;
+            email: string;
+            url: string;
+            expiresAt: number;
+          }>(c.env.API_TOKEN, "kb_consent_", body.consent)
+        : null;
+    if (
+      !consent ||
+      consent.sub !== identity.sub ||
+      consent.email !== identity.email ||
+      consent.url !== url.toString() ||
+      !(consent.expiresAt > Date.now())
+    ) {
+      return c.json(
+        {
+          error: "access_denied",
+          error_description: "Invalid or expired authorization confirmation"
+        },
+        403
+      );
+    }
+
     const scope = requestedScope || (isLegacyClient ? "read" : MCP_SCOPE);
     const grant: AuthorizationCodeGrant = {
       id: crypto.randomUUID(),
@@ -889,11 +953,7 @@ app.all("/oauth/authorize", async (c) => {
       codeChallenge: codeChallenge || undefined,
       expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_SECONDS * 1000
     };
-    const code = await signOAuthValue(
-      c.env.API_TOKEN,
-      "kb_code_",
-      grant
-    );
+    const code = await signOAuthValue(c.env.API_TOKEN, "kb_code_", grant);
 
     const targetUrl = new URL(redirectUri);
     targetUrl.searchParams.set("code", code);
@@ -903,6 +963,19 @@ app.all("/oauth/authorize", async (c) => {
     targetUrl.searchParams.set("iss", origin);
     return c.redirect(targetUrl.toString(), 302);
   }
+
+  if (c.req.method !== "GET") {
+    return c.json(
+      { error: "invalid_request", error_description: "Use GET or POST" },
+      405
+    );
+  }
+  const consent = await signOAuthValue(c.env.API_TOKEN, "kb_consent_", {
+    sub: identity.sub,
+    email: identity.email,
+    url: url.toString(),
+    expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_SECONDS * 1000
+  });
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -918,7 +991,6 @@ app.all("/oauth/authorize", async (c) => {
     h2 { margin: 0 0 8px; color: #0f172a; font-size: 22px; }
     p { font-size: 14px; color: #64748b; line-height: 1.5; margin: 0 0 24px; }
     label { display: block; text-align: left; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px; }
-    input[type="password"] { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; margin-bottom: 20px; }
     button { width: 100%; background: #2563eb; color: white; border: none; padding: 12px; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
     button:hover { background: #1d4ed8; }
   </style>
@@ -927,10 +999,10 @@ app.all("/oauth/authorize", async (c) => {
   <div class="card">
     <div class="icon">${FAVICON_SVG}</div>
     <h2>Authorize Connection</h2>
-    <p>Connect your personal Knowledge Base to ChatGPT or Codex.</p>
+    <p>Signed in as <strong>${htmlEscape(identity.email)}</strong> through Cloudflare Access.</p>
+    <p>Allow this client to search your personal Knowledge Base?</p>
     <form method="POST" action="${htmlEscape(url.pathname + url.search)}">
-      <label for="token">API Secret Token</label>
-      <input type="password" id="token" name="token" placeholder="Enter your API_TOKEN" required autofocus />
+      <input type="hidden" name="consent" value="${htmlEscape(consent)}" />
       <button type="submit">Authorize & Connect</button>
     </form>
   </div>

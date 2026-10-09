@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import app, { type SearchResponse } from "./index.js";
+import {
+  accessEnv,
+  accessToken,
+  approveAuthorization,
+  mockAccessKeys
+} from "./test/access-fixture.js";
 
 describe("Search & Indexing API Worker", () => {
   const kvStore = new Map<string, string>();
@@ -28,6 +34,7 @@ describe("Search & Indexing API Worker", () => {
   }
 
   const mockEnv = {
+    ...accessEnv,
     API_TOKEN: "valid_secret_token_123",
     AI_MODEL: "@cf/baai/bge-m3",
     AI: {
@@ -86,13 +93,8 @@ describe("Search & Indexing API Worker", () => {
 
   async function issueOAuthAccessToken(): Promise<string> {
     const redirectUri = "https://chatgpt.com/aip/callback";
-    const authRes = await app.request(
+    const authRes = await approveAuthorization(
       `/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=${encodeURIComponent(redirectUri)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ token: mockEnv.API_TOKEN }).toString()
-      },
       mockEnv
     );
     expect(authRes.status).toBe(302);
@@ -119,12 +121,14 @@ describe("Search & Indexing API Worker", () => {
     return tokenJson.access_token;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await mockAccessKeys();
     vi.clearAllMocks();
     kvStore.clear();
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -438,15 +442,8 @@ describe("Search & Indexing API Worker", () => {
     authorizeUrl.searchParams.set("resource", resource);
     authorizeUrl.searchParams.set("code_challenge", challenge);
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
-    const authRes = await app.request(
+    const authRes = await approveAuthorization(
       authorizeUrl.toString(),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          token: "valid_secret_token_123"
-        }).toString()
-      },
       mockEnv
     );
     expect(authRes.status).toBe(302);
@@ -638,15 +635,8 @@ describe("Search & Indexing API Worker", () => {
     authorizeUrl.searchParams.set("resource", resource);
     authorizeUrl.searchParams.set("code_challenge", challenge);
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
-    const authRes = await app.request(
+    const authRes = await approveAuthorization(
       authorizeUrl.toString(),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          token: "valid_secret_token_123"
-        }).toString()
-      },
       mockEnv
     );
     expect(authRes.status).toBe(302);
@@ -709,7 +699,7 @@ describe("Search & Indexing API Worker", () => {
 
     const authorizeRes = await app.request(
       authorizeUrl.toString(),
-      undefined,
+      { headers: { "Cf-Access-Jwt-Assertion": await accessToken() } },
       mockEnv
     );
     expect(authorizeRes.status).toBe(200);
@@ -849,15 +839,8 @@ describe("Search & Indexing API Worker", () => {
   });
 
   it("should handle OAuth authorization code flow", async () => {
-    const authRes = await app.request(
+    const authRes = await approveAuthorization(
       "/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.com%2Faip%2Fcallback&state=state123",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          token: "valid_secret_token_123"
-        }).toString()
-      },
       mockEnv
     );
     expect(authRes.status).toBe(302);
