@@ -1,3 +1,4 @@
+import { createOAuthStore } from "./test/oauth-store-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import app, { type Bindings } from "./index.js";
 import {
@@ -8,7 +9,7 @@ import {
   mockAccessKeys
 } from "./test/access-fixture.js";
 
-const env = { API_TOKEN: "admin-secret", ...accessEnv } as Bindings;
+const env = { OAUTH_STORE: createOAuthStore(), ...accessEnv } as Bindings;
 
 describe("Cloudflare Access OAuth login", () => {
   beforeEach(async () => {
@@ -31,7 +32,7 @@ describe("Cloudflare Access OAuth login", () => {
     expect(html).toContain("user@example.org");
     expect(html).toContain('name="consent"');
     expect(html).not.toContain('type="password"');
-    expect(html).not.toContain("API_TOKEN");
+    expect(html).not.toContain("former-admin-secret");
   });
 
   it("keeps browser form redirects to external OAuth callbacks available", async () => {
@@ -136,7 +137,11 @@ describe("Cloudflare Access OAuth login", () => {
             "Content-Type": "application/x-www-form-urlencoded"
           },
           ...(method === "POST"
-            ? { body: new URLSearchParams({ token: env.API_TOKEN }).toString() }
+            ? {
+                body: new URLSearchParams({
+                  token: "former-admin-secret"
+                }).toString()
+              }
             : {})
         },
         env

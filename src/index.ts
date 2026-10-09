@@ -1,15 +1,19 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { accessEmailDomain, accessIssuer, verifyAccessIdentity } from "./access.js";
+import { readOAuthValue, storeOAuthValue } from "./oauth-store.js";
 
 export interface Bindings {
-  API_TOKEN: string;
+  OAUTH_STORE: DurableObjectNamespace;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
   ACCESS_EMAIL_DOMAIN?: string;
   AI_MODEL?: string;
   AI: {
-    run: (model: string, input: { text: string[] }) => Promise<{
+    run: (
+      model: string,
+      input: { text: string[] }
+    ) => Promise<{
       data?: number[][];
       shape?: number[];
     }>;
@@ -47,7 +51,11 @@ export interface Bindings {
       options?: { expirationTtl?: number }
     ) => Promise<void>;
     delete: (key: string) => Promise<void>;
-    list: (options?: { prefix?: string; limit?: number; cursor?: string }) => Promise<{
+    list: (options?: {
+      prefix?: string;
+      limit?: number;
+      cursor?: string;
+    }) => Promise<{
       keys: Array<{ name: string; expiration?: number; metadata?: unknown }>;
       list_complete?: boolean;
       cursor?: string;
@@ -133,6 +141,8 @@ interface OAuthClient {
 }
 
 interface AuthorizationCodeGrant {
+  sub: string;
+  email: string;
   id: string;
   clientId: string;
   redirectUri: string;
@@ -143,6 +153,8 @@ interface AuthorizationCodeGrant {
 }
 
 interface OAuthTokenGrant {
+  sub: string;
+  email: string;
   id: string;
   clientId: string;
   scope: string;
@@ -209,8 +221,63 @@ function getBearerToken(c: Context<{ Bindings: Bindings }>): string | null {
   return authHeader.slice(7).trim() || null;
 }
 
-function isApiTokenAuthorized(c: Context<{ Bindings: Bindings }>): boolean {
-  return getBearerToken(c) === c.env.API_TOKEN;
+async function authorizeAccess(
+  c: Context<{ Bindings: Bindings }>
+): Promise<Response | { sub: string; email: string }> {
+  const emailDomain = accessEmailDomain(c.env);
+  if (!accessIssuer(c.env) || !emailDomain) {
+    return c.json(
+      {
+        error: "temporarily_unavailable",
+        error_description: "Cloudflare Access is not configured"
+      },
+      503
+    );
+  }
+  const assertion = c.req.header("Cf-Access-Jwt-Assertion");
+  const identity = assertion
+    ? await verifyAccessIdentity(assertion, c.env)
+    : null;
+  if (!identity) {
+    return c.json(
+      {
+        error: "access_denied",
+        error_description: "Sign in through Cloudflare Access"
+      },
+      401
+    );
+  }
+  const parts = identity.email.split("@");
+  if (
+    parts.length !== 2 ||
+    !parts[0] ||
+    /\s/.test(identity.email) ||
+    parts[1].toLowerCase() !== emailDomain
+  ) {
+    return c.json(
+      {
+        error: "access_denied",
+        error_description:
+          "This email domain is not allowed to authorize connections"
+      },
+      403
+    );
+  }
+  const origin = c.req.header("Origin");
+  if (
+    origin &&
+    c.req.method !== "GET" &&
+    origin !== new URL(c.req.url).origin
+  ) {
+    return c.json(
+      {
+        error: "access_denied",
+        error_description: "Cross-origin writes are not allowed"
+      },
+      403
+    );
+  }
+  return identity;
 }
 
 async function getOAuthTokenGrant(
@@ -222,8 +289,8 @@ async function getOAuthTokenGrant(
     return null;
   }
 
-  const grant = await verifyOAuthValue<OAuthTokenGrant>(
-    c.env.API_TOKEN,
+  const grant = await readOAuthValue<OAuthTokenGrant>(
+    c.env.OAUTH_STORE,
     "kb_at_",
     token
   );
@@ -244,78 +311,6 @@ function base64Url(bytes: ArrayBufferLike): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
-}
-
-function base64UrlText(value: string): string {
-  return base64Url(new TextEncoder().encode(value).buffer);
-}
-
-function decodeBase64Url(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(
-    normalized.length + ((4 - (normalized.length % 4)) % 4),
-    "="
-  );
-  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-}
-
-async function hmacKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"]
-  );
-}
-
-async function signOAuthValue<T>(
-  secret: string,
-  prefix: string,
-  value: T
-): Promise<string> {
-  const payload = base64UrlText(JSON.stringify(value));
-  const signedValue = `${prefix}${payload}`;
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    await hmacKey(secret),
-    new TextEncoder().encode(signedValue)
-  );
-  return `${signedValue}.${base64Url(signature)}`;
-}
-
-async function verifyOAuthValue<T>(
-  secret: string,
-  prefix: string,
-  value: string
-): Promise<T | null> {
-  if (!value.startsWith(prefix)) {
-    return null;
-  }
-  const separator = value.lastIndexOf(".");
-  if (separator <= prefix.length) {
-    return null;
-  }
-
-  const signedValue = value.slice(0, separator);
-  const signature = value.slice(separator + 1);
-  try {
-    const valid = await crypto.subtle.verify(
-      "HMAC",
-      await hmacKey(secret),
-      decodeBase64Url(signature),
-      new TextEncoder().encode(signedValue)
-    );
-    if (!valid) {
-      return null;
-    }
-    const payload = signedValue.slice(prefix.length);
-    return JSON.parse(
-      new TextDecoder().decode(decodeBase64Url(payload))
-    ) as T;
-  } catch {
-    return null;
-  }
 }
 
 async function createPkceChallenge(verifier: string): Promise<string> {
@@ -354,9 +349,8 @@ app.get("/favicon.ico", (c) => {
 
 // KV Sync State endpoints
 app.get("/sync-state/:source", async (c) => {
-  if (!isApiTokenAuthorized(c)) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const identity = await authorizeAccess(c);
+  if (identity instanceof Response) return identity;
 
   const source = c.req.param("source");
   const key = `sync_state:${encodeURIComponent(source)}`;
@@ -378,9 +372,8 @@ app.get("/sync-state/:source", async (c) => {
 });
 
 app.put("/sync-state/:source", async (c) => {
-  if (!isApiTokenAuthorized(c)) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const identity = await authorizeAccess(c);
+  if (identity instanceof Response) return identity;
 
   const source = c.req.param("source");
   const key = `sync_state:${encodeURIComponent(source)}`;
@@ -392,9 +385,8 @@ app.put("/sync-state/:source", async (c) => {
 
 // Vector Upsert endpoint
 app.post("/vectors/upsert", async (c) => {
-  if (!isApiTokenAuthorized(c)) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const identity = await authorizeAccess(c);
+  if (identity instanceof Response) return identity;
 
   let body: unknown;
   try {
@@ -516,9 +508,8 @@ app.post("/vectors/upsert", async (c) => {
 
 // Vector Delete endpoint
 app.post("/vectors/delete", async (c) => {
-  if (!isApiTokenAuthorized(c)) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const identity = await authorizeAccess(c);
+  if (identity instanceof Response) return identity;
 
   let body: unknown;
   try {
@@ -558,9 +549,8 @@ function generateVectorId(sourceName: string, filePath: string, chunkIndex: numb
 
 // Vector Clear endpoint
 app.post("/vectors/clear", async (c) => {
-  if (!isApiTokenAuthorized(c)) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const identity = await authorizeAccess(c);
+  if (identity instanceof Response) return identity;
 
   try {
     const sourceParam = c.req.query("source");
@@ -702,8 +692,8 @@ app.post("/oauth/register", async (c) => {
     redirectUris,
     createdAt: Date.now()
   };
-  const clientId = await signOAuthValue(
-    c.env.API_TOKEN,
+  const clientId = await storeOAuthValue(
+    c.env.OAUTH_STORE,
     "kb_client_",
     client
   );
@@ -819,8 +809,8 @@ app.all("/oauth/authorize", async (c) => {
       clientIsValid = false;
     }
   } else {
-    const client = await verifyOAuthValue<OAuthClient>(
-      c.env.API_TOKEN,
+    const client = await readOAuthValue<OAuthClient>(
+      c.env.OAUTH_STORE,
       "kb_client_",
       clientId
     );
@@ -879,45 +869,8 @@ app.all("/oauth/authorize", async (c) => {
   c.header("Pragma", "no-cache");
   c.header("Content-Security-Policy", "frame-ancestors 'none'");
   c.header("Referrer-Policy", "no-referrer");
-  const emailDomain = accessEmailDomain(c.env);
-  if (!accessIssuer(c.env) || !emailDomain) {
-    return c.json(
-      {
-        error: "temporarily_unavailable",
-        error_description: "Cloudflare Access is not configured"
-      },
-      503
-    );
-  }
-  const assertion = c.req.header("Cf-Access-Jwt-Assertion");
-  const identity = assertion
-    ? await verifyAccessIdentity(assertion, c.env)
-    : null;
-  if (!identity) {
-    return c.json(
-      {
-        error: "access_denied",
-        error_description: "Sign in through Cloudflare Access"
-      },
-      401
-    );
-  }
-  const emailParts = identity.email.split("@");
-  if (
-    emailParts.length !== 2 ||
-    !emailParts[0] ||
-    /\s/.test(identity.email) ||
-    emailParts[1].toLowerCase() !== emailDomain
-  ) {
-    return c.json(
-      {
-        error: "access_denied",
-        error_description:
-          "This email domain is not allowed to authorize connections"
-      },
-      403
-    );
-  }
+  const identity = await authorizeAccess(c);
+  if (identity instanceof Response) return identity;
 
   if (c.req.method === "POST") {
     const body = await c.req
@@ -925,12 +878,12 @@ app.all("/oauth/authorize", async (c) => {
       .catch(() => ({}) as Record<string, unknown>);
     const consent =
       typeof body.consent === "string"
-        ? await verifyOAuthValue<{
+        ? await readOAuthValue<{
             sub: string;
             email: string;
             url: string;
             expiresAt: number;
-          }>(c.env.API_TOKEN, "kb_consent_", body.consent)
+          }>(c.env.OAUTH_STORE, "kb_consent_", body.consent)
         : null;
     if (
       !consent ||
@@ -948,8 +901,27 @@ app.all("/oauth/authorize", async (c) => {
       );
     }
 
+    if (
+      !(await readOAuthValue(
+        c.env.OAUTH_STORE,
+        "kb_consent_",
+        body.consent as string,
+        true
+      ))
+    ) {
+      return c.json(
+        {
+          error: "access_denied",
+          error_description: "Authorization confirmation was already used"
+        },
+        403
+      );
+    }
+
     const scope = requestedScope || (isLegacyClient ? "read" : MCP_SCOPE);
     const grant: AuthorizationCodeGrant = {
+      sub: identity.sub,
+      email: identity.email,
       id: crypto.randomUUID(),
       clientId,
       redirectUri,
@@ -958,7 +930,7 @@ app.all("/oauth/authorize", async (c) => {
       codeChallenge: codeChallenge || undefined,
       expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_SECONDS * 1000
     };
-    const code = await signOAuthValue(c.env.API_TOKEN, "kb_code_", grant);
+    const code = await storeOAuthValue(c.env.OAUTH_STORE, "kb_code_", grant);
 
     const targetUrl = new URL(redirectUri);
     targetUrl.searchParams.set("code", code);
@@ -975,7 +947,7 @@ app.all("/oauth/authorize", async (c) => {
       405
     );
   }
-  const consent = await signOAuthValue(c.env.API_TOKEN, "kb_consent_", {
+  const consent = await storeOAuthValue(c.env.OAUTH_STORE, "kb_consent_", {
     sub: identity.sub,
     email: identity.email,
     url: url.toString(),
@@ -1044,8 +1016,8 @@ app.post("/oauth/token", async (c) => {
       (body["refresh_token"] as string) ||
       c.req.query("refresh_token") ||
       "";
-    const refreshGrant = await verifyOAuthValue<OAuthTokenGrant>(
-      c.env.API_TOKEN,
+    const refreshGrant = await readOAuthValue<OAuthTokenGrant>(
+      c.env.OAUTH_STORE,
       "kb_rt_",
       refreshToken
     );
@@ -1065,6 +1037,18 @@ app.post("/oauth/token", async (c) => {
       );
     }
 
+    if (
+      !(await readOAuthValue(c.env.OAUTH_STORE, "kb_rt_", refreshToken, true))
+    ) {
+      return c.json(
+        {
+          error: "invalid_grant",
+          error_description: "Refresh token was already used"
+        },
+        400
+      );
+    }
+
     const now = Date.now();
     const accessGrant: OAuthTokenGrant = {
       ...refreshGrant,
@@ -1077,8 +1061,8 @@ app.post("/oauth/token", async (c) => {
       expiresAt: now + REFRESH_TOKEN_TTL_SECONDS * 1000
     };
     const [accessToken, rotatedRefreshToken] = await Promise.all([
-      signOAuthValue(c.env.API_TOKEN, "kb_at_", accessGrant),
-      signOAuthValue(c.env.API_TOKEN, "kb_rt_", rotatedRefreshGrant)
+      storeOAuthValue(c.env.OAUTH_STORE, "kb_at_", accessGrant),
+      storeOAuthValue(c.env.OAUTH_STORE, "kb_rt_", rotatedRefreshGrant)
     ]);
     return c.json({
       access_token: accessToken,
@@ -1105,8 +1089,8 @@ app.post("/oauth/token", async (c) => {
     (body["redirect_uri"] as string) || c.req.query("redirect_uri") || "";
   const codeVerifier =
     (body["code_verifier"] as string) || c.req.query("code_verifier") || "";
-  const grant = await verifyOAuthValue<AuthorizationCodeGrant>(
-    c.env.API_TOKEN,
+  const grant = await readOAuthValue<AuthorizationCodeGrant>(
+    c.env.OAUTH_STORE,
     "kb_code_",
     code
   );
@@ -1141,8 +1125,20 @@ app.post("/oauth/token", async (c) => {
     }
   }
 
+  if (!(await readOAuthValue(c.env.OAUTH_STORE, "kb_code_", code, true))) {
+    return c.json(
+      {
+        error: "invalid_grant",
+        error_description: "Authorization code was already used"
+      },
+      400
+    );
+  }
+
   const now = Date.now();
   const accessGrant: OAuthTokenGrant = {
+    sub: grant.sub,
+    email: grant.email,
     id: crypto.randomUUID(),
     clientId: grant.clientId,
     scope: grant.scope,
@@ -1150,6 +1146,8 @@ app.post("/oauth/token", async (c) => {
     expiresAt: now + ACCESS_TOKEN_TTL_SECONDS * 1000
   };
   const refreshGrant: OAuthTokenGrant = {
+    sub: grant.sub,
+    email: grant.email,
     id: crypto.randomUUID(),
     clientId: grant.clientId,
     scope: grant.scope,
@@ -1157,8 +1155,8 @@ app.post("/oauth/token", async (c) => {
     expiresAt: now + REFRESH_TOKEN_TTL_SECONDS * 1000
   };
   const [accessToken, refreshToken] = await Promise.all([
-    signOAuthValue(c.env.API_TOKEN, "kb_at_", accessGrant),
-    signOAuthValue(c.env.API_TOKEN, "kb_rt_", refreshGrant)
+    storeOAuthValue(c.env.OAUTH_STORE, "kb_at_", accessGrant),
+    storeOAuthValue(c.env.OAUTH_STORE, "kb_rt_", refreshGrant)
   ]);
 
   return c.json({

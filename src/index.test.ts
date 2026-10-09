@@ -1,3 +1,5 @@
+import { createOAuthStore } from "./test/oauth-store-fixture.js";
+import { readOAuthValue } from "./oauth-store.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import app, { type SearchResponse } from "./index.js";
 import {
@@ -21,21 +23,9 @@ describe("Search & Indexing API Worker", () => {
       .replace(/=+$/, "");
   }
 
-  function decodeOAuthTokenGrant(token: string, prefix: string): {
-    expiresAt: number;
-  } {
-    const encodedPayload = token.slice(prefix.length).split(".")[0];
-    const normalized = encodedPayload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(
-      normalized.length + ((4 - (normalized.length % 4)) % 4),
-      "="
-    );
-    return JSON.parse(atob(padded)) as { expiresAt: number };
-  }
-
   const mockEnv = {
     ...accessEnv,
-    API_TOKEN: "valid_secret_token_123",
+    OAUTH_STORE: createOAuthStore(),
     AI_MODEL: "@cf/baai/bge-m3",
     AI: {
       run: vi.fn().mockResolvedValue({
@@ -75,19 +65,23 @@ describe("Search & Indexing API Worker", () => {
       deleteByIds: vi.fn().mockResolvedValue({ count: 1 })
     },
     KV: {
-      get: vi.fn().mockImplementation(async (key: string) => kvStore.get(key) || null),
+      get: vi
+        .fn()
+        .mockImplementation(async (key: string) => kvStore.get(key) || null),
       put: vi.fn().mockImplementation(async (key: string, value: string) => {
         kvStore.set(key, value);
       }),
       delete: vi.fn().mockImplementation(async (key: string) => {
         kvStore.delete(key);
       }),
-      list: vi.fn().mockImplementation(async ({ prefix }: { prefix?: string }) => {
-        const keys = Array.from(kvStore.keys())
-          .filter((k) => !prefix || k.startsWith(prefix))
-          .map((name) => ({ name }));
-        return { keys };
-      })
+      list: vi
+        .fn()
+        .mockImplementation(async ({ prefix }: { prefix?: string }) => {
+          const keys = Array.from(kvStore.keys())
+            .filter((k) => !prefix || k.startsWith(prefix))
+            .map((name) => ({ name }));
+          return { keys };
+        })
     }
   };
 
@@ -98,9 +92,9 @@ describe("Search & Indexing API Worker", () => {
       mockEnv
     );
     expect(authRes.status).toBe(302);
-    const code = new URL(authRes.headers.get("Location") || "").searchParams.get(
-      "code"
-    );
+    const code = new URL(
+      authRes.headers.get("Location") || ""
+    ).searchParams.get("code");
     expect(code).toBeTruthy();
 
     const tokenRes = await app.request(
@@ -156,7 +150,7 @@ describe("Search & Indexing API Worker", () => {
     const resEmpty = await app.request(
       "/sync-state/obsidian",
       {
-        headers: { Authorization: "Bearer valid_secret_token_123" }
+        headers: { "Cf-Access-Jwt-Assertion": await accessToken() }
       },
       mockEnv
     );
@@ -177,7 +171,7 @@ describe("Search & Indexing API Worker", () => {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer valid_secret_token_123"
+          "Cf-Access-Jwt-Assertion": await accessToken()
         },
         body: JSON.stringify(statePayload)
       },
@@ -190,7 +184,7 @@ describe("Search & Indexing API Worker", () => {
     const resGet = await app.request(
       "/sync-state/obsidian",
       {
-        headers: { Authorization: "Bearer valid_secret_token_123" }
+        headers: { "Cf-Access-Jwt-Assertion": await accessToken() }
       },
       mockEnv
     );
@@ -218,7 +212,7 @@ describe("Search & Indexing API Worker", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer valid_secret_token_123"
+          "Cf-Access-Jwt-Assertion": await accessToken()
         },
         body: JSON.stringify(chunksPayload)
       },
@@ -230,10 +224,9 @@ describe("Search & Indexing API Worker", () => {
     expect(json.success).toBe(true);
     expect(json.count).toBe(1);
 
-    expect(mockEnv.AI.run).toHaveBeenCalledWith(
-      "@cf/baai/bge-m3",
-      { text: ["System architecture overview"] }
-    );
+    expect(mockEnv.AI.run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["System architecture overview"]
+    });
 
     expect(mockEnv.VECTORIZE.upsert).toHaveBeenCalledWith([
       {
@@ -258,7 +251,7 @@ describe("Search & Indexing API Worker", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer valid_secret_token_123"
+          "Cf-Access-Jwt-Assertion": await accessToken()
         },
         body: JSON.stringify({
           ids: ["obsidian:notes/arch.md:0", "obsidian:notes/arch.md:1"]
@@ -292,14 +285,18 @@ describe("Search & Indexing API Worker", () => {
       {
         method: "POST",
         headers: {
-          Authorization: "Bearer valid_secret_token_123"
+          "Cf-Access-Jwt-Assertion": await accessToken()
         }
       },
       mockEnv
     );
 
     expect(res.status).toBe(200);
-    const json = (await res.json()) as { success: boolean; deletedVectorsCount: number; clearedSources: string[] };
+    const json = (await res.json()) as {
+      success: boolean;
+      deletedVectorsCount: number;
+      clearedSources: string[];
+    };
     expect(json.success).toBe(true);
     expect(json.deletedVectorsCount).toBe(2);
     expect(json.clearedSources).toEqual(["obsidian"]);
@@ -330,7 +327,7 @@ describe("Search & Indexing API Worker", () => {
       {
         method: "POST",
         headers: {
-          Authorization: "Bearer valid_secret_token_123"
+          "Cf-Access-Jwt-Assertion": await accessToken()
         }
       },
       mockEnv
@@ -392,8 +389,7 @@ describe("Search & Indexing API Worker", () => {
     expect(await oauthRes.json()).toEqual(
       expect.objectContaining({
         issuer: "https://knowbase.example.org",
-        authorization_endpoint:
-          "https://knowbase.example.org/oauth/authorize",
+        authorization_endpoint: "https://knowbase.example.org/oauth/authorize",
         token_endpoint: "https://knowbase.example.org/oauth/token",
         registration_endpoint: "https://knowbase.example.org/oauth/register",
         code_challenge_methods_supported: ["S256"],
@@ -409,7 +405,8 @@ describe("Search & Indexing API Worker", () => {
     vi.setSystemTime(initialTime);
     const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
     const resource = "https://knowbase.example.org/mcp";
-    const verifier = "pkce-verifier-with-at-least-forty-three-characters-123456";
+    const verifier =
+      "pkce-verifier-with-at-least-forty-three-characters-123456";
     const challenge = await createPkceChallenge(verifier);
 
     const registerRes = await app.request(
@@ -501,7 +498,7 @@ describe("Search & Indexing API Worker", () => {
       scope: string;
     };
     expect(tokenJson.access_token).toMatch(/^kb_at_/);
-    expect(tokenJson.access_token).not.toBe(mockEnv.API_TOKEN);
+    expect(tokenJson.access_token).not.toBe("former-admin-secret");
     expect(tokenJson.refresh_token).toMatch(/^kb_rt_/);
     expect(tokenJson.expires_in).toBe(3600);
     expect(tokenJson.scope).toBe("search:read");
@@ -574,17 +571,28 @@ describe("Search & Indexing API Worker", () => {
     expect(refreshed.access_token).not.toBe(tokenJson.access_token);
     expect(refreshed.refresh_token).toMatch(/^kb_rt_/);
     expect(refreshed.refresh_token).not.toBe(tokenJson.refresh_token);
-    const originalRefreshGrant = decodeOAuthTokenGrant(
-      tokenJson.refresh_token,
-      "kb_rt_"
+    const renewed = await readOAuthValue<{ expiresAt: number }>(
+      mockEnv.OAUTH_STORE,
+      "kb_rt_",
+      refreshed.refresh_token
     );
-    const rotatedRefreshGrant = decodeOAuthTokenGrant(
-      refreshed.refresh_token,
-      "kb_rt_"
+    expect(renewed?.expiresAt).toBe(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    // Refresh rotation renews validity and rejects reuse of the consumed credential.
+    const replay = await app.request(
+      "https://knowbase.example.org/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: tokenJson.refresh_token,
+          client_id: registered.client_id,
+          resource
+        }).toString()
+      },
+      mockEnv
     );
-    expect(rotatedRefreshGrant.expiresAt).toBe(
-      originalRefreshGrant.expiresAt + 24 * 60 * 60 * 1000
-    );
+    expect(replay.status).toBe(400);
 
     const writeRes = await app.request(
       "https://knowbase.example.org/vectors/delete",
@@ -603,10 +611,10 @@ describe("Search & Indexing API Worker", () => {
 
   it("should accept Codex loopback redirects with dynamic ports", async () => {
     const registeredRedirect = "http://127.0.0.1/callback/codex-server-id";
-    const activeRedirect =
-      "http://127.0.0.1:49152/callback/codex-server-id";
+    const activeRedirect = "http://127.0.0.1:49152/callback/codex-server-id";
     const resource = "https://knowbase.example.org/mcp";
-    const verifier = "pkce-verifier-with-at-least-forty-three-characters-123456";
+    const verifier =
+      "pkce-verifier-with-at-least-forty-three-characters-123456";
     const challenge = await createPkceChallenge(verifier);
 
     const registerRes = await app.request(
@@ -971,10 +979,9 @@ describe("Search & Indexing API Worker", () => {
     expect(res.status).toBe(200);
     const json = (await res.json()) as SearchResponse;
 
-    expect(mockEnv.AI.run).toHaveBeenCalledWith(
-      "@cf/baai/bge-m3",
-      { text: ["how does architecture work?"] }
-    );
+    expect(mockEnv.AI.run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["how does architecture work?"]
+    });
 
     expect(mockEnv.VECTORIZE.query).toHaveBeenCalledWith(
       [0.11, 0.22, 0.33],
