@@ -19,7 +19,6 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://knowbase-api.tenfy.cn
     steps:
       - name: Check out repository
         uses: actions/checkout@v6

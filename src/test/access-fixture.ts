@@ -3,7 +3,8 @@ import app, { type Bindings } from "../index.js";
 
 export const accessEnv = {
   ACCESS_TEAM_DOMAIN: "test-team.cloudflareaccess.com",
-  ACCESS_AUD: "test-access-application"
+  ACCESS_AUD: "test-access-application",
+  ACCESS_EMAIL_DOMAIN: "example.org"
 };
 
 const keyPair = crypto.subtle.generateKey(
@@ -35,7 +36,7 @@ export async function accessToken(
     iss: `https://${accessEnv.ACCESS_TEAM_DOMAIN}`,
     aud: [accessEnv.ACCESS_AUD],
     sub: "access-user-id",
-    email: "user@tenfy.cn",
+    email: "user@example.org",
     type: "app",
     iat: now,
     exp: now + 3600,
@@ -65,7 +66,7 @@ export async function mockAccessKeys(kid = "access-key") {
 }
 
 export const authorizationUrl =
-  "https://knowbase-api.tenfy.cn/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.com%2Faip%2Fcallback&state=state123";
+  "https://knowbase.example.org/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.com%2Faip%2Fcallback&state=state123";
 
 export async function approveAuthorization(
   url: string,

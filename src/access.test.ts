@@ -28,10 +28,31 @@ describe("Cloudflare Access OAuth login", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     const html = await res.text();
-    expect(html).toContain("user@tenfy.cn");
+    expect(html).toContain("user@example.org");
     expect(html).toContain('name="consent"');
     expect(html).not.toContain('type="password"');
     expect(html).not.toContain("API_TOKEN");
+  });
+
+  it("keeps browser form redirects to external OAuth callbacks available", async () => {
+    const token = await accessToken();
+    const page = await app.request(
+      authorizationUrl,
+      {
+        headers: { "Cf-Access-Jwt-Assertion": token }
+      },
+      env
+    );
+    // Chromium applies form-action to redirects after consent POST as well.
+    // OAuth callbacks can be external HTTPS hosts or dynamic loopback ports.
+    const policy = page.headers.get("Content-Security-Policy") || "";
+    expect(policy).toContain("frame-ancestors 'none'");
+    expect(policy).not.toMatch(/(?:^|;)\s*form-action\b/);
+    const result = await approveAuthorization(authorizationUrl, env, token);
+    expect(result.status).toBe(302);
+    expect(new URL(result.headers.get("Location")!).origin).toBe(
+      "https://chatgpt.com"
+    );
   });
 
   it("issues a code after authenticated consent and preserves state and issuer", async () => {
@@ -41,19 +62,19 @@ describe("Cloudflare Access OAuth login", () => {
     expect(location.searchParams.get("code")).toMatch(/^kb_code_/);
     expect(location.searchParams.get("state")).toBe("state123");
     expect(location.searchParams.get("iss")).toBe(
-      "https://knowbase-api.tenfy.cn"
+      "https://knowbase.example.org"
     );
   });
 
   it.each([
     "user@example.com",
-    "user@sub.tenfy.cn",
-    "user@eviltenfy.cn",
-    "user@tenfy.cn.evil.com",
-    "@tenfy.cn",
-    "user@@tenfy.cn",
-    " user@tenfy.cn",
-    "user@tenfy.cn\n"
+    "user@sub.example.org",
+    "user@evilexample.org",
+    "user@example.org.evil.com",
+    "@example.org",
+    "user@@example.org",
+    " user@example.org",
+    "user@example.org\n"
   ])("rejects email %j", async (email) => {
     const res = await app.request(
       authorizationUrl,
@@ -68,9 +89,21 @@ describe("Cloudflare Access OAuth login", () => {
     const res = await approveAuthorization(
       authorizationUrl,
       env,
-      await accessToken({ email: "User@TENFY.CN" })
+      await accessToken({ email: "User@EXAMPLE.ORG" })
     );
     expect(res.status).toBe(302);
+  });
+
+  it("uses the deployment's configured email domain", async () => {
+    const config = { ...env, ACCESS_EMAIL_DOMAIN: "other.example.org" };
+    const accepted = await approveAuthorization(
+      authorizationUrl,
+      config,
+      await accessToken({ email: "User@OTHER.EXAMPLE.ORG" })
+    );
+    expect(accepted.status).toBe(302);
+    const rejected = await approveAuthorization(authorizationUrl, config);
+    expect(rejected.status).toBe(403);
   });
 
   it.each([
@@ -99,7 +132,7 @@ describe("Cloudflare Access OAuth login", () => {
         {
           method,
           headers: {
-            "Cf-Access-Authenticated-User-Email": "user@tenfy.cn",
+            "Cf-Access-Authenticated-User-Email": "user@example.org",
             "Content-Type": "application/x-www-form-urlencoded"
           },
           ...(method === "POST"
@@ -137,6 +170,12 @@ describe("Cloudflare Access OAuth login", () => {
   it.each([
     { ACCESS_TEAM_DOMAIN: undefined },
     { ACCESS_AUD: undefined },
+    { ACCESS_EMAIL_DOMAIN: undefined },
+    { ACCESS_EMAIL_DOMAIN: "" },
+    { ACCESS_EMAIL_DOMAIN: "@example.org" },
+    { ACCESS_EMAIL_DOMAIN: "example.org,other.org" },
+    { ACCESS_EMAIL_DOMAIN: "example.org\n" },
+    { ACCESS_EMAIL_DOMAIN: "example..org" },
     { ACCESS_TEAM_DOMAIN: "attacker.example.com" }
   ])("fails closed for missing or invalid configuration %j", async (config) => {
     const res = await app.request(

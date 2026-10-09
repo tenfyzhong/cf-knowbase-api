@@ -3,6 +3,22 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 interface AccessConfig {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
+  ACCESS_EMAIL_DOMAIN?: string;
+}
+
+export function accessEmailDomain(config: AccessConfig): string | null {
+  const domain = config.ACCESS_EMAIL_DOMAIN;
+  if (
+    !domain ||
+    domain !== domain.trim() ||
+    domain.length > 253 ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(
+      domain
+    )
+  ) {
+    return null;
+  }
+  return domain.toLowerCase();
 }
 
 // One configured team per Worker isolate. jose caches keys and bounds fetches.

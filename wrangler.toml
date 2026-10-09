@@ -2,11 +2,9 @@ name = "cf-knowbase-api"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
-account_id = "d2400c41980c1ea80728ad214078178f"
-
-routes = [
-  { pattern = "knowbase-api.tenfy.cn", custom_domain = true }
-]
+# Optional: set your account_id and custom domain for this deployment.
+# account_id = "your-cloudflare-account-id"
+# routes = [{ pattern = "knowbase.example.com", custom_domain = true }]
 
 [ai]
 binding = "AI"
@@ -17,11 +15,13 @@ index_name = "knowbase-index"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "8892dd218f4b43259ca31b786dc3b422"
+id = "your-kv-namespace-id"
 
 [vars]
 AI_MODEL = "@cf/baai/bge-m3"
 
-# Cloudflare Access application: cf-knowbase-oauth (/oauth/authorize).
-ACCESS_TEAM_DOMAIN = "tenfy.cloudflareaccess.com"
-ACCESS_AUD = "9ecc7b29a79182ab2ce3c312d7d5e2827b6e900804832ae7335ac38bc0cfa105"
+# Configure these for your Access application protecting /oauth/authorize.
+# OAuth authorization fails closed until all three values are configured.
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+ACCESS_EMAIL_DOMAIN = ""

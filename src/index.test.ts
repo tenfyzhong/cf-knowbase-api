@@ -371,31 +371,31 @@ describe("Search & Indexing API Worker", () => {
 
   it("should publish MCP OAuth protected resource and authorization server metadata", async () => {
     const resourceRes = await app.request(
-      "https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource",
+      "https://knowbase.example.org/.well-known/oauth-protected-resource",
       {},
       mockEnv
     );
     expect(resourceRes.status).toBe(200);
     expect(await resourceRes.json()).toEqual({
-      resource: "https://knowbase-api.tenfy.cn/mcp",
-      authorization_servers: ["https://knowbase-api.tenfy.cn"],
+      resource: "https://knowbase.example.org/mcp",
+      authorization_servers: ["https://knowbase.example.org"],
       scopes_supported: ["search:read"],
-      resource_documentation: "https://knowbase-api.tenfy.cn"
+      resource_documentation: "https://knowbase.example.org"
     });
 
     const oauthRes = await app.request(
-      "https://knowbase-api.tenfy.cn/.well-known/oauth-authorization-server",
+      "https://knowbase.example.org/.well-known/oauth-authorization-server",
       {},
       mockEnv
     );
     expect(oauthRes.status).toBe(200);
     expect(await oauthRes.json()).toEqual(
       expect.objectContaining({
-        issuer: "https://knowbase-api.tenfy.cn",
+        issuer: "https://knowbase.example.org",
         authorization_endpoint:
-          "https://knowbase-api.tenfy.cn/oauth/authorize",
-        token_endpoint: "https://knowbase-api.tenfy.cn/oauth/token",
-        registration_endpoint: "https://knowbase-api.tenfy.cn/oauth/register",
+          "https://knowbase.example.org/oauth/authorize",
+        token_endpoint: "https://knowbase.example.org/oauth/token",
+        registration_endpoint: "https://knowbase.example.org/oauth/register",
         code_challenge_methods_supported: ["S256"],
         token_endpoint_auth_methods_supported: ["none"],
         scopes_supported: ["search:read"]
@@ -408,12 +408,12 @@ describe("Search & Indexing API Worker", () => {
     vi.useFakeTimers();
     vi.setSystemTime(initialTime);
     const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
-    const resource = "https://knowbase-api.tenfy.cn/mcp";
+    const resource = "https://knowbase.example.org/mcp";
     const verifier = "pkce-verifier-with-at-least-forty-three-characters-123456";
     const challenge = await createPkceChallenge(verifier);
 
     const registerRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/register",
+      "https://knowbase.example.org/oauth/register",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -432,7 +432,7 @@ describe("Search & Indexing API Worker", () => {
     expect(registered.client_id).toMatch(/^kb_client_/);
 
     const authorizeUrl = new URL(
-      "https://knowbase-api.tenfy.cn/oauth/authorize"
+      "https://knowbase.example.org/oauth/authorize"
     );
     authorizeUrl.searchParams.set("response_type", "code");
     authorizeUrl.searchParams.set("client_id", registered.client_id);
@@ -451,13 +451,13 @@ describe("Search & Indexing API Worker", () => {
     expect(location.origin + location.pathname).toBe(redirectUri);
     expect(location.searchParams.get("state")).toBe("state123");
     expect(location.searchParams.get("iss")).toBe(
-      "https://knowbase-api.tenfy.cn"
+      "https://knowbase.example.org"
     );
     const code = location.searchParams.get("code");
     expect(code).toBeTruthy();
 
     const wrongVerifierRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/token",
+      "https://knowbase.example.org/oauth/token",
       {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -478,7 +478,7 @@ describe("Search & Indexing API Worker", () => {
     );
 
     const tokenRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/token",
+      "https://knowbase.example.org/oauth/token",
       {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -507,7 +507,7 @@ describe("Search & Indexing API Worker", () => {
     expect(tokenJson.scope).toBe("search:read");
 
     const verifyRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/verify",
+      "https://knowbase.example.org/oauth/verify",
       {
         headers: { Authorization: `Bearer ${tokenJson.access_token}` }
       },
@@ -521,7 +521,7 @@ describe("Search & Indexing API Worker", () => {
     });
 
     const mcpCallRes = await app.request(
-      "https://knowbase-api.tenfy.cn/mcp",
+      "https://knowbase.example.org/mcp",
       {
         method: "POST",
         headers: {
@@ -552,7 +552,7 @@ describe("Search & Indexing API Worker", () => {
 
     vi.setSystemTime(new Date(initialTime.getTime() + 24 * 60 * 60 * 1000));
     const refreshRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/token",
+      "https://knowbase.example.org/oauth/token",
       {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -587,7 +587,7 @@ describe("Search & Indexing API Worker", () => {
     );
 
     const writeRes = await app.request(
-      "https://knowbase-api.tenfy.cn/vectors/delete",
+      "https://knowbase.example.org/vectors/delete",
       {
         method: "POST",
         headers: {
@@ -605,12 +605,12 @@ describe("Search & Indexing API Worker", () => {
     const registeredRedirect = "http://127.0.0.1/callback/codex-server-id";
     const activeRedirect =
       "http://127.0.0.1:49152/callback/codex-server-id";
-    const resource = "https://knowbase-api.tenfy.cn/mcp";
+    const resource = "https://knowbase.example.org/mcp";
     const verifier = "pkce-verifier-with-at-least-forty-three-characters-123456";
     const challenge = await createPkceChallenge(verifier);
 
     const registerRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/register",
+      "https://knowbase.example.org/oauth/register",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -626,7 +626,7 @@ describe("Search & Indexing API Worker", () => {
     const registered = (await registerRes.json()) as { client_id: string };
 
     const authorizeUrl = new URL(
-      "https://knowbase-api.tenfy.cn/oauth/authorize"
+      "https://knowbase.example.org/oauth/authorize"
     );
     authorizeUrl.searchParams.set("response_type", "code");
     authorizeUrl.searchParams.set("client_id", registered.client_id);
@@ -644,7 +644,7 @@ describe("Search & Indexing API Worker", () => {
     expect(location.origin + location.pathname).toBe(activeRedirect);
 
     const tokenRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/token",
+      "https://knowbase.example.org/oauth/token",
       {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -666,7 +666,7 @@ describe("Search & Indexing API Worker", () => {
     const registeredRedirect = "http://localhost/callback";
     const activeRedirect = "http://localhost:3000/callback";
     const registerRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/register",
+      "https://knowbase.example.org/oauth/register",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -681,7 +681,7 @@ describe("Search & Indexing API Worker", () => {
     expect(registerRes.status).toBe(201);
     const registered = (await registerRes.json()) as { client_id: string };
     const authorizeUrl = new URL(
-      "https://knowbase-api.tenfy.cn/oauth/authorize"
+      "https://knowbase.example.org/oauth/authorize"
     );
     authorizeUrl.searchParams.set("response_type", "code");
     authorizeUrl.searchParams.set("client_id", registered.client_id);
@@ -689,7 +689,7 @@ describe("Search & Indexing API Worker", () => {
     authorizeUrl.searchParams.set("scope", "search:read");
     authorizeUrl.searchParams.set(
       "resource",
-      "https://knowbase-api.tenfy.cn/mcp"
+      "https://knowbase.example.org/mcp"
     );
     authorizeUrl.searchParams.set(
       "code_challenge",
@@ -707,7 +707,7 @@ describe("Search & Indexing API Worker", () => {
 
   it("should reject non-loopback HTTP OAuth redirects", async () => {
     const registerRes = await app.request(
-      "https://knowbase-api.tenfy.cn/oauth/register",
+      "https://knowbase.example.org/oauth/register",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -727,7 +727,7 @@ describe("Search & Indexing API Worker", () => {
 
   it("should challenge unauthenticated MCP connections before initialization", async () => {
     const initializeRes = await app.request(
-      "https://knowbase-api.tenfy.cn/mcp",
+      "https://knowbase.example.org/mcp",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -747,7 +747,7 @@ describe("Search & Indexing API Worker", () => {
 
     expect(initializeRes.status).toBe(401);
     expect(initializeRes.headers.get("WWW-Authenticate")).toContain(
-      'resource_metadata="https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource"'
+      'resource_metadata="https://knowbase.example.org/.well-known/oauth-protected-resource"'
     );
   });
 
@@ -901,7 +901,7 @@ describe("Search & Indexing API Worker", () => {
     expect(searchRes.status).toBe(401);
 
     const mcpRes = await app.request(
-      "https://knowbase-api.tenfy.cn/mcp",
+      "https://knowbase.example.org/mcp",
       {
         method: "POST",
         headers: {
@@ -922,7 +922,7 @@ describe("Search & Indexing API Worker", () => {
     );
     expect(mcpRes.status).toBe(401);
     expect(mcpRes.headers.get("WWW-Authenticate")).toContain(
-      'resource_metadata="https://knowbase-api.tenfy.cn/.well-known/oauth-protected-resource"'
+      'resource_metadata="https://knowbase.example.org/.well-known/oauth-protected-resource"'
     );
   });
 

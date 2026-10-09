@@ -1,11 +1,12 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import { accessIssuer, verifyAccessIdentity } from "./access.js";
+import { accessEmailDomain, accessIssuer, verifyAccessIdentity } from "./access.js";
 
 export interface Bindings {
   API_TOKEN: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
+  ACCESS_EMAIL_DOMAIN?: string;
   AI_MODEL?: string;
   AI: {
     run: (model: string, input: { text: string[] }) => Promise<{
@@ -876,12 +877,10 @@ app.all("/oauth/authorize", async (c) => {
 
   c.header("Cache-Control", "no-store");
   c.header("Pragma", "no-cache");
-  c.header(
-    "Content-Security-Policy",
-    "frame-ancestors 'none'; form-action 'self'"
-  );
+  c.header("Content-Security-Policy", "frame-ancestors 'none'");
   c.header("Referrer-Policy", "no-referrer");
-  if (!accessIssuer(c.env)) {
+  const emailDomain = accessEmailDomain(c.env);
+  if (!accessIssuer(c.env) || !emailDomain) {
     return c.json(
       {
         error: "temporarily_unavailable",
@@ -903,12 +902,18 @@ app.all("/oauth/authorize", async (c) => {
       401
     );
   }
-  if (!/^[^@\s]+@tenfy\.cn$/i.test(identity.email)) {
+  const emailParts = identity.email.split("@");
+  if (
+    emailParts.length !== 2 ||
+    !emailParts[0] ||
+    /\s/.test(identity.email) ||
+    emailParts[1].toLowerCase() !== emailDomain
+  ) {
     return c.json(
       {
         error: "access_denied",
         error_description:
-          "Only @tenfy.cn email addresses may authorize connections"
+          "This email domain is not allowed to authorize connections"
       },
       403
     );
