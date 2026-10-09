@@ -191,61 +191,101 @@ Each successful refresh rotates the refresh token and starts a new 30-day validi
 
 ## Deployment
 
-### 1. Create Vectorize Index & KV Namespace
+The repository supports deployment through GitHub Actions or the local Wrangler CLI. Each fork supplies its own Cloudflare resources and Access configuration; no personal account IDs, domains or Access values are provided by default.
+
+### 1. Prepare your fork and Cloudflare account
+
+1. Fork this repository and clone your fork.
+2. Install Node.js 22 and pnpm 10, then install the locked dependencies:
+
+   ```bash
+   pnpm install --frozen-lockfile
+   pnpm exec wrangler login
+   ```
+
+3. Choose the Worker name and public hostname for your deployment. In `wrangler.toml`, set `name`, replace the KV namespace placeholder after step 2, and optionally set your `account_id` and custom-domain `routes`. The Access application in step 3 must use this same public hostname.
+
+For a custom domain, replace the commented example route with your own hostname. Without a custom route, use the Worker's `workers.dev` hostname for the Access application and MCP client configuration.
+
+### 2. Create the Vectorize index and KV namespace
 
 ```bash
-npx wrangler vectorize create knowbase-index --dimensions=1024 --metric=cosine
-npx wrangler kv namespace create knowbase-kv-namespace
+pnpm exec wrangler vectorize create knowbase-index --dimensions=1024 --metric=cosine
+pnpm exec wrangler kv namespace create knowbase-kv-namespace
 ```
 
-Copy the new KV namespace ID into `wrangler.toml`. Set your Worker name, account ID and optional custom-domain route for your deployment; the checked-in configuration contains no account-specific values.
+Copy the generated KV namespace ID into `[[kv_namespaces]].id` in `wrangler.toml`. If you choose another Vectorize index name, update `[[vectorize]].index_name` to match. Keep the binding names `KV`, `VECTORIZE` and `AI` unchanged because the Worker uses them.
 
-### 2. Set Secret Token
+Commit your fork's Worker/resource configuration before releasing it so GitHub Actions deploys the correct Worker and resources. Account and resource IDs identify your deployment; keep tokens and other secret values out of Git.
+
+### 3. Create the Cloudflare Access application
+
+1. Open **Cloudflare Zero Trust** for your deployment account. Set up the organization if needed and note its **team domain**, such as `your-team.cloudflareaccess.com`. This is the Access login hostname, separate from your Worker hostname.
+2. In **Access → Applications**, create a **Self-hosted** application for your Worker hostname with the path `/oauth/authorize`. Protect this path only: OAuth discovery, `/oauth/register`, `/oauth/token`, and `/mcp` must remain reachable by MCP clients without an Access browser session.
+3. Add an **Allow** policy with **Include → Emails ending in → your allowed email domain**, such as `example.com`. Enable an identity provider or **One-time PIN** to verify email ownership. Do not add an Everyone, Bypass, or service-token policy to this application.
+4. Copy the application's **Application Audience (AUD) tag**. You will configure this value, the team domain, and the allowed email domain in step 4.
+
+The Worker verifies the JWT signature, issuer, audience, expiry and application identity, then independently checks the exact email domain (case-insensitive; subdomains are not implicitly allowed). Use the same domain in the Access policy and `ACCESS_EMAIL_DOMAIN`, without a leading `@`. Missing or invalid Worker configuration returns HTTP 503, missing or invalid JWTs return HTTP 401, and other email domains return HTTP 403. See [Cloudflare's JWT validation documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
+
+### 4. Configure every GitHub Actions deployment input
+
+In your fork, open **Settings → Secrets and variables → Actions**. Add all five entries below. The two Cloudflare authentication entries must be **Secrets**; the three Access entries can be **Variables** or **Secrets**.
+
+| Name | Required | GitHub storage | Value and where to obtain it |
+| --- | --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Yes | Secret | A Cloudflare API token authorized to deploy your Worker and manage its secrets. Create it under **Cloudflare → My Profile → API Tokens**, using the **Edit Cloudflare Workers** template and restricting it to your deployment account and applicable resources. |
+| `CLOUDFLARE_ACCOUNT_ID` | Yes | Secret | The account ID for the account containing your Worker, KV namespace and Vectorize index; copy it from the Cloudflare account/Worker overview. |
+| `ACCESS_TEAM_DOMAIN` | Yes | Variable or Secret | Your Zero Trust team hostname, for example `your-team.cloudflareaccess.com`. Do not include `https://` or a trailing slash. |
+| `ACCESS_AUD` | Yes | Variable or Secret | The **Application Audience (AUD) tag** from the Access application protecting this Worker's `/oauth/authorize` path. |
+| `ACCESS_EMAIL_DOMAIN` | Yes | Variable or Secret | The email domain from your Access Allow policy, for example `example.com`. Do not include `@`; configure a single domain. |
+
+Alternatively, configure these names in **Settings → Environments → production**. The deployment job uses the GitHub `production` Environment, so its protection/approval rules apply.
+
+For each Access name, a non-empty same-named **Secret takes precedence over a Variable**. The workflow checks that all three Access values are present and not whitespace-only before deployment, then uploads them as **Worker secrets** using Wrangler Action. They are available to the Worker under the same names, regardless of whether their GitHub source was a Variable or Secret. Do not add empty or same-named plaintext variables to `wrangler.toml`.
+
+The workflow does not read `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` from Variables. It also does not upload `API_TOKEN`; provision that separate Worker secret in step 5.
+
+### 5. Set the Worker's application secret
+
+Choose a strong random application token and store it on the Worker configured by `wrangler.toml`:
 
 ```bash
-npx wrangler secret put API_TOKEN
+pnpm exec wrangler secret put API_TOKEN
 ```
 
-### 3. Configure Cloudflare Zero Trust login
+Enter the value when prompted. This is a **Cloudflare Worker secret**, not a required GitHub Actions input. It protects administrative API endpoints and signs OAuth credentials; it is separate from the Cloudflare deployment credential `CLOUDFLARE_API_TOKEN`. The authorization page never asks users to enter it.
 
-Each deployment must configure its own Access application, team domain, application audience and allowed email domain. The repository does not provide a default login domain.
+The deployment workflow updates only the three Access secrets and preserves the existing Worker `API_TOKEN`. Keep it stable across deployments to retain issued OAuth access/refresh credentials; rotate it when you intend to revoke them.
 
-1. Open **Cloudflare Zero Trust** for the same account. If necessary, set up the organization and choose a team name. The **team domain** is its login hostname, such as `your-team.cloudflareaccess.com`; it is separate from the Worker domain `knowbase.example.com`.
-2. In **Access → Applications**, create a **Self-hosted** application for `knowbase.example.com` with the path `/oauth/authorize`. Protect this path only: OAuth discovery, `/oauth/register`, `/oauth/token`, and `/mcp` must remain reachable by MCP clients without an Access browser session.
-3. Add an **Allow** policy with **Include → Emails ending in → your allowed email domain** (for example, `example.com`). Use an identity provider or enable **One-time PIN** to verify ownership of the email address. Do not add an Everyone, Bypass, or service-token policy to this application.
-4. Copy the application's **Application Audience (AUD) tag** and your team domain. Configure all three values using one of the deployment methods below.
+### 6. Deploy with GitHub Actions
 
-For **GitHub Actions deployment**, open **Settings → Secrets and variables → Actions** in your repository and add these names under **Variables** or **Secrets**:
+1. Push your fork's deployment configuration to its default branch and enable GitHub Actions for the fork if needed.
+2. Ensure the release commit includes the configuration and code you want to deploy.
+3. Create and push an unused version tag **starting with a digit**, for example:
 
-| Name | Value |
-| --- | --- |
-| `ACCESS_TEAM_DOMAIN` | Your team hostname, such as `your-team.cloudflareaccess.com`, without `https://` or a trailing slash |
-| `ACCESS_AUD` | Your Access application's Application Audience (AUD) tag |
-| `ACCESS_EMAIL_DOMAIN` | Your allowed email domain, such as `example.com`, without `@` |
+   ```bash
+   git tag -s 0.3.0 -m "Release 0.3.0"
+   git push origin 0.3.0
+   ```
 
-The workflow also supports these names in the GitHub **production** Environment. For each name, a non-empty Secret takes precedence over a Variable. Deployment validates that all three values are present, then binds them to the Worker as secrets through Wrangler Action. You do not need to put their values in `wrangler.toml` or commit them to the repository. Missing or whitespace-only values stop the workflow before deployment. The existing version-tag trigger remains unchanged.
+4. Open **Actions → Deploy** and inspect the run. If your `production` Environment requires approval, approve that deployment through GitHub.
 
-For **manual deployment**, store the same values as Worker secrets:
+The workflow installs locked dependencies, runs unit tests and type checking, validates the Access inputs, uploads the Access secrets, and deploys the Worker. Tags prefixed with `v` do not match the current `[0-9]*` trigger. Pull requests and pushes to `main` run CI but do not trigger production deployment.
+
+After deployment, open an OAuth authorization request through an MCP client. Confirm that it redirects to Cloudflare Access, allows an email from your configured domain, and shows the signed-in email plus a connection confirmation without a password field. Check that a different email domain is denied and the client's OAuth token exchange succeeds.
+
+### Manual deployment alternative
+
+After steps 1–3 and 5, store the three Access values directly as Worker secrets instead of configuring GitHub Actions:
 
 ```bash
 pnpm exec wrangler secret put ACCESS_TEAM_DOMAIN
 pnpm exec wrangler secret put ACCESS_AUD
 pnpm exec wrangler secret put ACCESS_EMAIL_DOMAIN
-```
-
-Enter each value when prompted, then run `pnpm run deploy`. Avoid defining the same names as plaintext variables in `wrangler.toml`, which would conflict with secret bindings.
-
-The Worker validates the Access JWT signature using the team's public keys, checks the issuer, audience, expiration and application-token identity, and independently enforces the exact domain in `ACCESS_EMAIL_DOMAIN` (case-insensitive; subdomains are not implicitly allowed). Use the same email domain in the Access policy and Worker variable, without a leading `@`. Missing or invalid configuration fails closed with HTTP 503; missing or invalid JWTs receive HTTP 401 and other email domains receive HTTP 403. Direct requests to a Worker URL cannot authorize a connection using a password or a forged email header. See [Cloudflare's JWT validation documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
-
-`API_TOKEN` is still required for administrative API authentication and signing OAuth credentials, but it is never entered on the authorization page. Existing issued OAuth access and refresh tokens retain their validity; rotate `API_TOKEN` if you also need to revoke previously issued credentials.
-
-### 4. Deploy Worker
-
-```bash
 pnpm run deploy
 ```
 
-For local development, testing, contribution guidelines, and the release process, see [CONTRIBUTING.md](CONTRIBUTING.md).
+Enter each value when prompted. For local development, testing, contribution guidelines, and the release process, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
