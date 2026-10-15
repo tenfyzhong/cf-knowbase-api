@@ -210,6 +210,8 @@ npx wrangler secret put API_TOKEN
 pnpm run deploy
 ```
 
+Automatic invocation logs are disabled in `wrangler.toml` because OAuth requests can include credentials in URL query parameters. Custom Worker logs remain enabled; do not log request URLs, tokens, or authorization headers. This setting takes effect after deployment and does not remove existing logs.
+
 For local development, testing, contribution guidelines, and the release process, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
