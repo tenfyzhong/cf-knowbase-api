@@ -4,7 +4,7 @@ Thank you for contributing to `cf-knowbase-api`.
 
 ## Prerequisites
 
-- Node.js 22
+- Node.js 22.23.4 (the development and CI version in `.node-version`)
 - pnpm 10
 - A Cloudflare account for Worker integration testing or deployment
 
